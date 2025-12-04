@@ -19,8 +19,8 @@ ddev restart
 
 After installation, make sure to commit the .ddev directory to version control.
 
-> [!CAUTION]
-> If you are using DB credentials that are not the default `root:root` credentials, do **NOT** commit `.ddev/datagrip` to your Git repository. See the FAQ below for more information.
+> [!NOTE]
+> DDEV doesn't support changing its DB credentials, so it should be well known that its default credentials are `root:root`. To configure DataGrip correctly, this Add-On will store these credentials in the `.ddev/datagrip` folder in your project. If you use tooling such as Gitleaks, be sure to configure it to prevent false positives.
 
 ## Usage
 | Argument | Description |
