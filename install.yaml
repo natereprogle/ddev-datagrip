@@ -20,7 +20,7 @@ pre_install_actions:
     # Create directories
     mkdir -p "$IDEA_DIR"
 
-global_files:
+project_files:
   - commands/host/datagrip
 
 ddev_version_constraint: ">= v1.24.10"
