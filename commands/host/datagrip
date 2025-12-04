@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+
+## #ddev-generated: If you want to edit and own this file, remove this line.
+## Description: Support for opening databases in DataGrip
+## Usage: datagrip
+## Example: "ddev datagrip" or "ddev datagrip --database database2" to open a database named "database2"
+## Flags: [{"Name":"database","Shorthand":"d","Usage":"Database name"},{"Name":"reset","Shorthand":"r","Usage":"Reset DataGrip datasource. Manual refresh in DataGrip is required after launch"},{"Name":"auto-refresh","Shorthand":"a","Usage":"Sets the interval, in minutes, that DataGrip will refresh the datasource. Minimum 0.1 minute (6 seconds). Set to 0 to disable"}]
+## DBTypes: mariadb,mysql
+
+RESET=false
+DATABASE="db"
+AUTOREFRESH=1
+
+while :; do
+  case ${1:-} in
+  -d|--database)
+      echo "🔎 --database flag provided, setting database to $2"
+      DATABASE="$2"
+      shift # Extra shift for the argument value
+      ;;
+  -r|--reset)
+    echo "🧨 --reset flag provided, resetting DataGrip datasource"
+    RESET=true
+    ;;
+  -a|--auto-refresh)
+    echo "🔄 --auto-refresh flag provided, setting auto-refresh interval to $2"
+    AUTOREFRESH=$2
+    if [[ ! "$AUTOREFRESH" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+      echo "❌ Error: auto-refresh value '$AUTOREFRESH' is not a valid number"
+      exit 1
+    fi
+    if (( $(echo "$AUTOREFRESH < 0.1" | bc -l) )); then
+      if (( $(echo "$AUTOREFRESH <= 0" | bc -l) )); then
+        echo "🛑 Auto-refresh set to 0, disabling"
+      else
+        echo "⚠️ Provided auto-refresh interval of $AUTOREFRESH is less than 0.1. Clamping to 0.1 minutes (6 seconds)"
+        AUTOREFRESH=0.1
+      fi
+    fi
+    shift # Extra shift for the argument value
+    ;;
+  --) # End of all options.
+    shift
+    break
+    ;;
+  -?*)
+    printf 'WARN: Unknown option (ignored): %s\n' "$1" >&2
+    ;;
+  *) # Default case: No more options, so break out of the loop.
+    break ;;
+  esac
+
+  shift
+done
+
+# Make sure the project is running; if not, start it and re-run this via ddev
+if [ "${DDEV_PROJECT_STATUS}" != "running" ] && [ -z "${no_recursion:-}" ]; then
+  echo "❌ Project ${DDEV_PROJECT} is not running, starting it"
+  ddev start
+  start_exit_code=$?
+  if [ $start_exit_code -ne 0 ]; then
+    exit $start_exit_code
+  fi
+  # run this script again, as the environment is updated after "ddev start"
+  no_recursion=true ddev "$(basename "$0")" "$@"
+  exit $?
+fi
+
+echo "✅ Project ${DDEV_PROJECT} is running!"
+echo "🔄 Preparing DataGrip datasource..."
+
+# Check for first-run or reset for proper messaging later on
+if [[ ! -d "${DDEV_APPROOT}/.ddev/datagrip/.idea/dataSources" ]]; then
+  FIRST_RUN=true
+elif [[ "$RESET" == true ]]; then
+  rm -rf "${DDEV_APPROOT}/.ddev/datagrip/.idea"
+  mkdir -p "${DDEV_APPROOT}/.ddev/datagrip/.idea"
+fi
+
+# DDEV_DATABASE is in the format type:version, like mysql:8 or mariadb:10.6. This gets the type part (mysql or mariadb)
+DB_TYPE="${DDEV_DATABASE%%:*}"
+
+# Build the JDBC URL based on DDEV env vars
+if [[ "$DB_TYPE" == "mysql" ]]; then
+  query="jdbc:mysql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=root&amp;password=root"
+  driverRef="mysql.8"
+  jdbcDriver="com.mysql.cj.jdbc.Driver"
+elif [[ "$DB_TYPE" == "mariadb" ]]; then
+  echo "🔎 MariaDB database detected, selecting MariaDB JDBC driver for better compatibility"
+  query="jdbc:mariadb://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=root&amp;password=root"
+  driverRef="mariadb"
+  jdbcDriver="org.mariadb.jdbc.Driver"
+else
+  echo "❌ Unsupported database type: ${DB_TYPE}"
+  exit 1
+fi
+
+# Where to put the DataGrip config
+IDEA_DIR="${DDEV_APPROOT}/.ddev/datagrip/.idea"
+DATASOURCES_FILE="${IDEA_DIR}/dataSources.xml"
+DATASOURCES_LOCAL_FILE="${IDEA_DIR}/dataSources.local.xml"
+
+# UUID for the datasource, necessary to remain static to avoid a "refresh" on each launch
+uuid_value="d0c53247-ec9f-44c8-9f4c-ea8f03b67892"
+
+# Write the XML file, interpolating Bash variables like $query
+cat > "$DATASOURCES_FILE" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
+    <data-source source="LOCAL" name="ddev" uuid="${uuid_value}">
+      <driver-ref>${driverRef}</driver-ref>
+      <synchronize>true</synchronize>
+      <configured-by-url>true</configured-by-url>
+      <jdbc-driver>${jdbcDriver}</jdbc-driver>
+      <jdbc-url>${query}</jdbc-url>
+      <jdbc-additional-properties>
+        $(if [[ "${AUTOREFRESH}" != "0" ]]; then echo "<property name=\"auto-refresh-interval\" value=\"${AUTOREFRESH}\" />"; fi)
+      </jdbc-additional-properties>
+      <driver-properties>
+        <property name="autoReconnect" value="true" />
+      </driver-properties>
+      <working-dir>\$ProjectFileDir\$</working-dir>
+    </data-source>
+  </component>
+</project>
+EOF
+
+# If the local file does not exist, create it. This doesn't really need to ever change after first write, so we can just ignore writing it if it already exists
+if [[ ! -f "$DATASOURCES_LOCAL_FILE" ]]; then
+  cat > "$DATASOURCES_LOCAL_FILE" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+<component name="dataSourceStorageLocal">
+  <data-source name="ddev" uuid="${uuid_value}">
+    <schema-mapping>
+      <introspection-scope>
+        <node kind="schema">
+          <name qname="@" />
+          <name qname="${DATABASE}" />
+        </node>
+      </introspection-scope>
+    </schema-mapping>
+    <introspection-level>3</introspection-level>
+  </data-source>
+</component>
+</project>
+EOF
+fi
+
+echo "✏️ Wrote DataGrip datasource, starting datagrip..."
+
+if [[ "$FIRST_RUN" == true ]]; then
+  echo -e "\\a" # Beep for attention
+  COLUMNS=$(tput cols) 
+  echo ""
+  title="⚠️ No schema for the DB has been detected ⚠️" 
+  printf "%*s\n" $(((${#title}+$COLUMNS)/2)) "$title"
+  printf "%*s" "$COLUMNS" | tr ' ' '-'
+  echo "If this is your first time connecting to the DB, no schema has been generated."
+  echo "Due to DataGrip limitations, you must manually refresh the datasource in DataGrip to generate the schema"
+  echo "You should not need to manually refresh again unless you manually delete the datasource or run 'ddev datagrip --reset'"
+  printf "%*s" "$COLUMNS" | tr ' ' '-'
+  echo ""
+elif [[ "$RESET" == true ]]; then
+  echo -e "\\a" # Beep for attention
+  COLUMNS=$(tput cols) 
+  echo ""
+  title="⚠️ DataGrip datasource has been reset ⚠️" 
+  printf "%*s\n" $(((${#title}+$COLUMNS)/2)) "$title"
+  printf "%*s" "$COLUMNS" | tr ' ' '-'
+  echo "DataGrip datasource has been reset. You must manually refresh the datasource in DataGrip."
+  echo "You should not need to manually refresh again unless you manually delete the datasource or run 'ddev datagrip --reset'"
+  printf "%*s" "$COLUMNS" | tr ' ' '-'
+  echo ""
+fi
+
+datagrip "${DDEV_APPROOT}/.ddev/datagrip"

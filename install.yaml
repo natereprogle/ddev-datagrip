@@ -1,0 +1,42 @@
+name: datagrip
+
+pre_install_actions:
+  - |
+    #ddev-description: Check if datagrip is available
+    if ! command -v datagrip >/dev/null 2>&1; then
+      echo "❌ DataGrip is not installed or not in PATH."
+      echo "   Use: Actions → Create Command Line Launcher in DataGrip"
+      echo "   Or, refer to DataGrip's documentation: https://www.jetbrains.com/help/datagrip/working-with-the-ide-features-from-command-line.html"
+      exit 1
+    fi
+
+  - |
+    #ddev-description: Create directory structure for DataGrip
+
+    # Define directories
+    BASE_DIR="${DDEV_APPROOT}/.ddev/datagrip"
+    IDEA_DIR="${BASE_DIR}/.idea"
+
+    # Create directories
+    mkdir -p "$IDEA_DIR"
+
+global_files:
+  - commands/host/datagrip
+
+ddev_version_constraint: ">= v1.24.10"
+
+post_install_actions:
+  - |
+    #ddev-description: Make `ddev datagrip` command executable
+    chmod +x ~/.ddev/commands/host/datagrip
+
+removal_actions:
+  - |
+    #ddev-description: Remove `ddev datagrip` command
+    rm ~/.ddev/commands/host/datagrip
+  - |
+    #ddev-description: Remove leftover files and directories
+    TARGET_DIR="${DDEV_APPROOT}/.ddev/datagrip"
+    if [ -d "$TARGET_DIR" ]; then
+      rm -rf "$TARGET_DIR"
+    fi
