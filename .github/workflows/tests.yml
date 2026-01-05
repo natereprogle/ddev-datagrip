@@ -9,7 +9,9 @@ on:
       - "**.md"
 
   schedule:
-  - cron: '25 08 * * *'
+  - cron: '0 7 * * 1'
+  # Tests are not disabled, contrary to DDEV's Add-On page. 
+  # I just have them set to run weekly instead of daily to avoid running my GitHub Actions costs up
 
   workflow_dispatch:
     inputs:
