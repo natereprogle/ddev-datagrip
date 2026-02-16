@@ -6,7 +6,7 @@
 # DDEV DataGrip Add-On
 
 ## Overview
-This Add-on allows you to open a DataGrip instance and connect to your local DDEV database without any manual configuration. It can also automatically use the MariaDB driver if it detects MariaDB instead of MySQL running in DDEV. As of 1.1.0, this Add-On now supports Postgres!
+This Add-on allows you to open a DataGrip instance and connect to your local DDEV database without any manual configuration. It can also automatically use the MariaDB driver if it detects MariaDB instead of MySQL running in DDEV. As of 2025.2.5a, this Add-On now supports Postgres!
 
 ## Installation
 ```sh
