@@ -3,13 +3,10 @@
 [![last commit](https://img.shields.io/github/last-commit/natereprogle/ddev-datagrip)](https://github.com/natereprogle/ddev-datagrip/commits)
 [![release](https://img.shields.io/github/v/release/natereprogle/ddev-datagrip)](https://github.com/natereprogle/ddev-datagrip/releases/latest)
 
-# DDEV DataGrip Add-on
+# DDEV DataGrip Add-On
 
 ## Overview
-This Add-on allows you to open a DataGrip instance and connect to your local DDEV database without any manual configuration. It can also automatically select between MariaDB and MySQL drivers without any user input, based on the configured Database Family in the DDEV config. 
-
-> [!IMPORTANT]
-> Currently, MariaDB and MySQL are the only supported database types. PostgreSQL may be supported in the future.
+This Add-on allows you to open a DataGrip instance and connect to your local DDEV database without any manual configuration. It can also automatically use the MariaDB driver if it detects MariaDB instead of MySQL running in DDEV. As of 1.1.0, this Add-On now supports Postgres!
 
 ## Installation
 ```sh
@@ -20,14 +17,15 @@ ddev restart
 After installation, make sure to commit the .ddev directory to version control.
 
 > [!NOTE]
-> DDEV doesn't support changing its DB credentials, so it should be well known that its default credentials are `root:root`. To configure DataGrip correctly, this Add-On will store these credentials in the `.ddev/datagrip` folder in your project. If you use tooling such as Gitleaks, be sure to configure it to prevent false positives.
+> DDEV doesn't support changing its DB credentials, so it should be well known that its default credentials are `db:db`. To configure DataGrip correctly, this Add-On will store these credentials in the `.ddev/datagrip` folder in your project. If you use tooling such as Gitleaks, be sure to configure it to prevent false positives.
 
 ## Usage
 | Argument | Description |
 |----------|-------------|
 | `--database [database]` | Specify the database to connect to |
 | `--reset` | Resets the DataGrip project, including configuration and generated schemas. A manual refresh will be required upon next launch of DataGrip |
-| `--auto-refresh [time in seconds]` | Enables auto-refresh in DataGrip. This only works if the datasource has been refreshed at least once. Minimum of 0.1 minutes (6 seconds), set to 0 to disable. Default is 1 minute |
+| `--auto-refresh [time in minutes]` | Enables auto-refresh in DataGrip. This only works if the datasource has been refreshed at least once. Minimum of 0.1 minutes (6 seconds), set to 0 to disable. Default is 1 minute |
+| `--pg-pass` | Only applicable for DDEV projects using Postgres. This will utilize pgpass (`~/.pgpass`) instead of User & Password for connecting to the Postgres database. It is required to provide this argument each time you want to authenticate with pgpass. Omitting this will default back to User & Password |
 | `--help` | Get command help |
 
 Connect to your local default DDEV database
@@ -45,13 +43,42 @@ Reset your datagrip configuration and datasource (note this will require you to 
 ddev datagrip --reset
 ```
 
+Set the auto-refresh delay to 30 seconds instead of 1 minute
+```sh
+ddev datagrip --auto-refresh 0.5
+```
+
+Use pgpass when connecting to a Postgres DB
+```sh
+ddev datagrip --pg-pass
+```
+
+# Update Philosphy
+JetBrains reserves the right to change how DataGrip is configured at any time, and this configuration may or may not be backwards compatible with older versions. Therefore, this Add-On will only ever be developed & tested on the latest version of DataGrip (**including** EAP versions). Personally, I have tested this Add-On with DataGrip 2025.2.5 and later – including 2026.1 EAP – with success.
+
+The version of this Add-On will reflect the minimum version of DataGrip this Add-On supports. Meaning, if you see the add-on is on version `2025.2.5`, that means the Add-On is tested and confirmed to support all DataGrip versions 2025.2.5 and later.
+
+A letter or extra decimal may be appended to the version when necessary to publish an update. For example, `2025.2.5a` or `2025.2.5.1` both target a minimum version of `2025.2.5`. Anything after the date can be safely ignored in terms of compatibility.
+
+> [!NOTE]
+> An exception to this is EAP versions of DataGrip. If the Add-On version contains `EAP` (case-sensitive) in the string, this indicates that the applicable version of the Add-On only supports a minimum of that EAP version of DataGrip. 
+> 
+> For example `2025.2.5eap` is safe and is likely just a version that was published to fix a bug, add a feature, or something else. `2025.2.5EAP`, `2025.2.5EAPa`, or `2025.2.5EAP.1` requires `2025.2.5 EAP` (If such a version existed, which it does not).
+
 # Known Issues & Limitations
 ## Initial Data Refresh
 Unlike other SQL tools like Sequel Ace, SQL Pro, and others which can be launched with CLI arguments to immediately connect to a Database, DataGrip requires a "Project". A "Project" is a directory which contains several configuration files, including `./.idea/dataSources.xml` and the DB schema, located in `./.idea/dataSources/` and generated by DataGrip automatically. Projects must be created with the DataGrip GUI.
 
 In order to support DataGrip *at all*, this Add-On creates a "project" and the necessary configuration files for you within the `.ddev/datagrip` directory. Normally, when you create a project in DataGrip, you would add a datasource in the UI and DataGrip automatically does an initial "refresh" to generate schemas. However, since the add-on "creates" this datasource for you outside of DataGrip, before DataGrip even launches, DataGrip does **not** automatically refresh the datasource.
 
-As a result, the initial refresh never happens, and so schema are never generated. Automatic Introspection will also never run, and subsequent launches of DataGrip will **never** generate schema. No specific configuration settings seemed to be able to change this behavior. The only workaround for this issue is to do a manual refresh on the very first launch of DataGrip. Future usage of the `ddev datagrip` command will not require a refresh on its own. However, if the DB schema is changed, datagrip may require a manual refresh again. *This is a limitation of DataGrip, not DDEV or this add-on*. We hope this can be improved in the future.
+As a result, the initial refresh never happens, and so schema are never generated. Automatic Introspection will also never run, and subsequent launches of DataGrip will **never** generate schema. No specific configuration settings seemed to be able to change this behavior. The only workaround for this issue is to do a manual refresh on the very first launch of DataGrip. Future usage of the `ddev datagrip` command will not require a refresh on its own. However, if the DB schema is changed, datagrip may require a manual refresh again. The Add-On attempts to mitigate this by configuring an automatic introspection interval of 1 minute, but again, this only runs after initial refresh. *This is a limitation of DataGrip, not DDEV or this add-on*. We hope this can be improved in the future, but as of DataGrip 2026.1 EAP, it has not been resolved.
 
 ## Cleartext DB Credentials
-DDEV uses `root:root` as its DB credentials. As it's meant for local development, they've also stated they have [no plans to allow changing this](https://github.com/ddev/ddev/issues/5723). This add-on stores DDEV's DB credentials in plaintext in the JDBC URL within `dataSources.xml`. Certain tools, like Gitleaks, may pick up on these credentials and throw a fit. You will need to make adjustments to your tooling if storing these credentials in plaintext is an issue.
+DDEV uses `db:db` as its DB credentials. As it's meant for local development, they've also stated they have [no plans to allow changing this](https://github.com/ddev/ddev/issues/5723). This add-on stores DDEV's DB credentials in plaintext in the JDBC URL within `dataSources.xml`. Certain tools, like Gitleaks, may pick up on these credentials and throw a fit. You will need to make adjustments to your tooling if storing these credentials in plaintext is an issue.
+
+The only exception to this is if you use pgpass for authentication when using a Postgres database. However, tooling may still pick up on the credentials hardcoded in the Add-On itself, and this is not something that can be resolved.
+
+## Incorrect configuration displayed after running `ddev datagrip` while DataGrip is running
+Sometimes, when `ddev datagrip` is run while DataGrip is already open, certain configuration values will not reflect their "true" value until DataGrip is restarted. An example of this can be found if you are using Postgres and typically use `ddev datagrip --pg-pass` to utilize .pgpass when authenticating. If you decide to execute `ddev datagrip` instead, which will use User & Password authentication, the Data Sources panel will show pgpass as the Authentication method but DataGrip will still use User & Password instead to authenticate. A restart of DataGrip is required to show the correct datasource properties.
+
+It is recommended that you exit DataGrip *fully* before running `ddev datagrip` to prevent any issues or quirks.

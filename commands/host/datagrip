@@ -4,12 +4,18 @@
 ## Description: Support for opening databases in DataGrip
 ## Usage: datagrip
 ## Example: "ddev datagrip" or "ddev datagrip --database database2" to open a database named "database2"
-## Flags: [{"Name":"database","Shorthand":"d","Usage":"Database name"},{"Name":"reset","Shorthand":"r","Usage":"Reset DataGrip datasource. Manual refresh in DataGrip is required after launch"},{"Name":"auto-refresh","Shorthand":"a","Usage":"Sets the interval, in minutes, that DataGrip will refresh the datasource. Minimum 0.1 minute (6 seconds). Set to 0 to disable"}]
-## DBTypes: mariadb,mysql
+## Flags: [{"Name":"database","Shorthand":"d","Usage":"Database name"},{"Name":"reset","Shorthand":"r","Usage":"Reset DataGrip datasource. Manual refresh in DataGrip is required after launch"},{"Name":"auto-refresh","Shorthand":"a","Usage":"Sets the interval, in minutes, that DataGrip will refresh the datasource. Minimum 0.1 minute (6 seconds). Set to 0 to disable"},{"Name":"pg-pass","Shorthand":"p","Usage":"Allows projects using Postgres to utilize the .pgpass file instead of storing credentials in the project directory. Passing this argument is required EACH TIME the command is run. While these credentials are still well known and inherently safe to store, using .pgpass may be beneficial, such as organizations that perform scans on commits for credentials."}]
+## DBTypes: mariadb,mysql,postgres
 
 RESET=false
 DATABASE="db"
 AUTOREFRESH=1
+PGPASS=false
+
+PGPASS_FILE="$HOME/.pgpass"
+
+# DDEV_DATABASE is in the format type:version, like mysql:8 or mariadb:10.6. This gets the type part (mysql or mariadb)
+DB_TYPE="${DDEV_DATABASE%%:*}"
 
 while :; do
   case ${1:-} in
@@ -38,6 +44,19 @@ while :; do
       fi
     fi
     shift # Extra shift for the argument value
+    ;;
+  -p|--pg-pass)
+    if [[ "$DB_TYPE" != "postgres" ]]; then
+      echo "⚠️ --pg-pass cannot be used without a Postgres DB. This project is using $DB_TYPE, so --pg-pass will not affect anything"
+    else
+      echo "🔄 --pg-pass flag provided, using .pgpass for authentication in DataGrip"
+      echo "⚠️ Note that using --pg-pass is a potentially destructive action as it writes to your .pgpass file. This should be safe, but be sure to back up your file, anyway."
+      if [[ -f "$PGPASS_FILE" && ! -f "$PGPASS_FILE.bak" ]]; then
+        echo "⚠️ As this is the first time --pg-pass has been used, ~/.pgpass.bak file has be created for you as a precaution, which contains the pre-datagrip configuration (if any)"
+        cp -p "$PGPASS_FILE" "$PGPASS_FILE.bak"
+      fi
+      PGPASS=true
+    fi
     ;;
   --) # End of all options.
     shift
@@ -77,19 +96,44 @@ elif [[ "$RESET" == true ]]; then
   mkdir -p "${DDEV_APPROOT}/.ddev/datagrip/.idea"
 fi
 
-# DDEV_DATABASE is in the format type:version, like mysql:8 or mariadb:10.6. This gets the type part (mysql or mariadb)
-DB_TYPE="${DDEV_DATABASE%%:*}"
-
 # Build the JDBC URL based on DDEV env vars
 if [[ "$DB_TYPE" == "mysql" ]]; then
-  query="jdbc:mysql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=root&amp;password=root"
+  echo "🔎 Configuring DataGrip for MySQL"
+  query="jdbc:mysql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=db&amp;password=db"
   driverRef="mysql.8"
   jdbcDriver="com.mysql.cj.jdbc.Driver"
 elif [[ "$DB_TYPE" == "mariadb" ]]; then
   echo "🔎 MariaDB database detected, selecting MariaDB JDBC driver for better compatibility"
-  query="jdbc:mariadb://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=root&amp;password=root"
+  query="jdbc:mariadb://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=db&amp;password=db"
   driverRef="mariadb"
   jdbcDriver="org.mariadb.jdbc.Driver"
+elif [[ "$DB_TYPE" == "postgres" ]]; then
+  echo "🔎 Configuring DataGrip for Postgres"
+  if [[ "$PGPASS" == true ]]; then
+    query="jdbc:postgresql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}"
+
+    CREDS="${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}:${DATABASE}:db:db"
+    PATTERN="^.*:[0-9]+:${DATABASE}:db:.*$"
+
+    tmp="$(mktemp "${PGPASS_FILE}.XXXXXX")"
+
+    # Ensure file exists so awk can read it
+    touch "$PGPASS_FILE"
+
+    awk -v pat="$PATTERN" -v repl="$CREDS" '
+      BEGIN { replaced=0 }
+      $0 ~ pat { print repl; replaced=1; next }
+      { print }
+      END { if (!replaced) print repl }
+    ' "$PGPASS_FILE" > "$tmp" && mv "$tmp" "$PGPASS_FILE"
+
+    chmod 600 "$PGPASS_FILE"
+  else
+    query="jdbc:postgresql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=db&amp;password=db"
+  fi
+
+  driverRef="postgresql"
+  jdbcDriver="org.postgresql.Driver"
 else
   echo "❌ Unsupported database type: ${DB_TYPE}"
   exit 1
@@ -126,19 +170,39 @@ cat > "$DATASOURCES_FILE" <<EOF
 </project>
 EOF
 
-# If the local file does not exist, create it. This doesn't really need to ever change after first write, so we can just ignore writing it if it already exists
-if [[ ! -f "$DATASOURCES_LOCAL_FILE" ]]; then
-  cat > "$DATASOURCES_LOCAL_FILE" <<EOF
+# Build node block
+if [[ "$DB_TYPE" == "postgres" ]]; then
+  NODE_BLOCK="<node kind=\"database\" qname=\"@\">
+    <node kind=\"schema\" qname=\"@\" />
+  </node>
+  <node kind=\"database\" qname=\"${DATABASE}\">
+    <node kind=\"schema\" qname=\"public\" />
+  </node>"
+else
+  NODE_BLOCK="<node kind=\"schema\">
+    <name qname=\"@\" />
+    <name qname=\"${DATABASE}\" />
+  </node>"
+fi
+
+# Build auth block (only when using pgpass)
+if [[ "$PGPASS" == true ]]; then
+  AUTH_BLOCK="<auth-provider>pgpass</auth-provider>
+  <user-name>db</user-name>"
+else
+  AUTH_BLOCK=""
+fi
+
+# Write the XML for the dataSources.local.xml file. This may change depending on PGPASS, so we rewrite it each time now.
+cat > "$DATASOURCES_LOCAL_FILE" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
 <component name="dataSourceStorageLocal">
   <data-source name="ddev" uuid="${uuid_value}">
+    ${AUTH_BLOCK}
     <schema-mapping>
       <introspection-scope>
-        <node kind="schema">
-          <name qname="@" />
-          <name qname="${DATABASE}" />
-        </node>
+        ${NODE_BLOCK}
       </introspection-scope>
     </schema-mapping>
     <introspection-level>3</introspection-level>
@@ -146,7 +210,6 @@ if [[ ! -f "$DATASOURCES_LOCAL_FILE" ]]; then
 </component>
 </project>
 EOF
-fi
 
 echo "✏️ Wrote DataGrip datasource, starting datagrip..."
 
@@ -159,7 +222,7 @@ if [[ "$FIRST_RUN" == true ]]; then
   printf "%*s" "$COLUMNS" | tr ' ' '-'
   echo "If this is your first time connecting to the DB, no schema has been generated."
   echo "Due to DataGrip limitations, you must manually refresh the datasource in DataGrip to generate the schema"
-  echo "You should not need to manually refresh again unless you manually delete the datasource or run 'ddev datagrip --reset'"
+  echo "You should not need to manually refresh again unless you manually delete the project or datasource, or run 'ddev datagrip --reset'"
   printf "%*s" "$COLUMNS" | tr ' ' '-'
   echo ""
 elif [[ "$RESET" == true ]]; then
@@ -170,7 +233,7 @@ elif [[ "$RESET" == true ]]; then
   printf "%*s\n" $(((${#title}+$COLUMNS)/2)) "$title"
   printf "%*s" "$COLUMNS" | tr ' ' '-'
   echo "DataGrip datasource has been reset. You must manually refresh the datasource in DataGrip."
-  echo "You should not need to manually refresh again unless you manually delete the datasource or run 'ddev datagrip --reset'"
+  echo "You should not need to manually refresh again unless you manually delete the project or datasource, or run 'ddev datagrip --reset'"
   printf "%*s" "$COLUMNS" | tr ' ' '-'
   echo ""
 fi
