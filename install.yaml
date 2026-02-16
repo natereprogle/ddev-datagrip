@@ -5,8 +5,7 @@ pre_install_actions:
     #ddev-description: Check if datagrip is available
     if ! command -v datagrip >/dev/null 2>&1; then
       echo "❌ DataGrip is not installed or not in PATH."
-      echo "   Use: Actions → Create Command Line Launcher in DataGrip"
-      echo "   Or, refer to DataGrip's documentation: https://www.jetbrains.com/help/datagrip/working-with-the-ide-features-from-command-line.html"
+      echo "   Refer to DataGrip's documentation to configure the PATH: https://www.jetbrains.com/help/datagrip/working-with-the-ide-features-from-command-line.html"
       exit 1
     fi
 
@@ -40,3 +39,9 @@ removal_actions:
     if [ -d "$TARGET_DIR" ]; then
       rm -rf "$TARGET_DIR"
     fi
+  - |
+    #ddev-description: Output that certain files may have been left behind
+    echo "ddev-datagrip has been removed, we hope it was useful to you!"
+    echo ""
+    echo "Do note: If you had a Postgres DB and used `ddev datagrip -p` at any point in time, ~/.pgpass and ~/.pgpass.bak files may have been created or modified"
+    echo "You may want to remove the ~/.pgpass.bak file and review the ~/.pgpass file for changes, removing any references to the DDEV database if necessary"
