@@ -63,7 +63,7 @@ A letter or extra decimal may be appended to the version when necessary to publi
 > [!NOTE]
 > An exception to this is EAP versions of DataGrip. If the Add-On version ends with `EAP` (case-insensitive), this indicates that the applicable version of the Add-On only supports a minimum of that EAP version of DataGrip. 
 > 
-> For example `2025.2.5eap`, `2025.2.5EAP`, and `2025.2.5EAP` all `2025.2.5 EAP` (If such a version existed, which it does not). `2025.2.5EAP.1`, `2025.2.5EAPa`, and `2025.2.5EAP123` do not require the EAP version as they do not end with `EAP`.
+> For example `2025.2.5eap`, `2025.2.5EAP`, and `2025.2.5.1EAP` all require DataGrip version `2025.2.5 EAP` (If such a version existed, which it does not). `2025.2.5EAP.1`, `2025.2.5EAPa`, and `2025.2.5EAP123` do not require the EAP version as they do not end with `EAP`.
 
 # Known Issues & Limitations
 ## Initial Data Refresh
