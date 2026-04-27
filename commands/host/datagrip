@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 ## #ddev-generated: If you want to edit and own this file, remove this line.
-## #ddev-warning-exit-code: 2
 ## Description: Support for opening databases in DataGrip
 ## Usage: datagrip
 ## Example: "ddev datagrip" or "ddev datagrip --database database2" to open a database named "database2"
