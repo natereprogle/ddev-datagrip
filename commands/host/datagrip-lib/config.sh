@@ -307,22 +307,27 @@ datagrip_config_regenerate_uuid() {
 
 # ─── User config (preferences) ──────────────────────────────────────────────
 
-# Ensure .gitignore exists in the config dir and excludes the user config
-# file. Idempotent — safe to call repeatedly. Only adds the line if missing.
+# Ensure .gitignore exists in the config dir. The canonical .gitignore is
+# shipped by install.yaml as a project_file (with a #ddev-generated marker),
+# so in normal use this function is a no-op: the file is already there.
+#
+# This function only creates a fallback if the file is missing — which can
+# happen if the user deleted it, or if they removed the #ddev-generated
+# marker AND then deleted the file later. The fallback intentionally does
+# NOT include the #ddev-generated marker, because that marker is a contract
+# between DDEV and the install.yaml-shipped file. A runtime-created fallback
+# isn't part of that contract and shouldn't claim to be.
 _dg_ensure_gitignore() {
   mkdir -p "$_DG_CONFIG_DIR"
-  local rel_user_config
-  rel_user_config="$(basename "$_DG_USER_CONFIG")"
-  if [[ ! -f "$_DG_GITIGNORE" ]]; then
-    cat > "$_DG_GITIGNORE" <<EOF
-# ddev-datagrip: exclude per-user preferences from the repo
-${rel_user_config}
-EOF
+  if [[ -f "$_DG_GITIGNORE" ]]; then
     return 0
   fi
-  if ! grep -qxF "$rel_user_config" "$_DG_GITIGNORE" 2>/dev/null; then
-    echo "$rel_user_config" >> "$_DG_GITIGNORE"
-  fi
+  cat > "$_DG_GITIGNORE" <<EOF
+# Per-user preferences (set via 'ddev datagrip config set ...')
+.user-config.yaml
+# DataGrip schema cache and IDE state — regenerated on connect
+.idea/
+EOF
 }
 
 # Load user-config defaults into shell variables. The caller passes a list of

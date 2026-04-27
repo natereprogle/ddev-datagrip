@@ -1,0 +1,5 @@
+#ddev-generated
+# Per-user preferences (set via 'ddev datagrip config set ...')
+.user-config.yaml
+# DataGrip schema cache and IDE state — regenerated on connect
+.idea/
