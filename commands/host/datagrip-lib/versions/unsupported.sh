@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+## #ddev-generated: If you want to edit and own this file, remove this line.
+
 # shellcheck shell=bash
 #
 # datagrip-lib/versions/unsupported.sh
