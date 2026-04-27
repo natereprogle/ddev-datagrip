@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+## #ddev-generated
 # shellcheck shell=bash
 #
 # datagrip-lib/versions/2025.2.5.sh
