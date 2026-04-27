@@ -23,9 +23,11 @@ After installation, make sure to commit the .ddev directory to version control.
 | Argument | Description |
 |----------|-------------|
 | `--database [database]` | Specify the database to connect to |
-| `--reset` | Resets the DataGrip project, including configuration and generated schemas. A manual refresh will be required upon next launch of DataGrip |
+| `--reset` | Resets the Add-On's configuration, stored UUID, and the DataGrip project, including configuration and generated schemas. A new UUID is generated after reset. A manual refresh will be required upon next launch of DataGrip |
 | `--auto-refresh [time in minutes]` | Enables auto-refresh in DataGrip. This only works if the datasource has been refreshed at least once. Minimum of 0.1 minutes (6 seconds), set to 0 to disable. Default is 1 minute |
-| `--pg-pass` | Only applicable for DDEV projects using Postgres. This will utilize pgpass (`~/.pgpass`) instead of User & Password for connecting to the Postgres database. It is required to provide this argument each time you want to authenticate with pgpass. Omitting this will default back to User & Password |
+| `--pg-pass` | Only applicable for DDEV projects using Postgres. This will utilize pgpass (`~/.pgpass`) instead of User & Password for connecting to the Postgres database. It is required to provide this argument each time you want to authenticate with pgpass unless configured to use pgpass by default via `ddev datagrip config` |
+| `--ignore-unsupported-versions` | Forces the Add-On to launch DataGrip even if the installed version is below the supported version of this add-on, you may force it to launch by passing this flag. Note that support is not provided for versions below the supported version |
+| `--no-defaults` | Ignores the defaults in the user configuration file |
 | `--help` | Get command help |
 
 Connect to your local default DDEV database
@@ -38,7 +40,7 @@ Connect to your local DDEV database using a specific database name
 ddev datagrip --database my-db
 ```
 
-Reset your datagrip configuration and datasource (note this will require you to manually refresh the datasource onced datagrip is launched)
+Reset the Add-On, which will remove any user-generated configuration, regenerate the data source UUID, and wipe and recreate the DataGrip project (note this will require you to manually refresh the datasource once DataGrip is launched).
 ```sh
 ddev datagrip --reset
 ```
@@ -52,6 +54,31 @@ Use pgpass when connecting to a Postgres DB
 ```sh
 ddev datagrip --pg-pass
 ```
+
+Force the Add-On to launch an unsupported DataGrip version
+```sh
+ddev datagrip --ignore-unsupported-versions
+```
+
+Ignore the user-defined default settings and launch with the Add-On's default settings
+```sh
+ddev datagrip --no-defaults
+```
+
+## Configuration
+As of Add-On version 2025.2.5b, the Add-On supports configuration. Available configurations options are:
+| Option | Type | Usage | Hardcoded Fallback |
+|--------|------|-------|--------------------|
+| `pg-pass` | bool | Whether to use `~/.pgpass` for Postgres auth (equivalent to passing `--pg-pass` every time) | `false` |
+| `default-database` | string | Default database to connect to (equivalent to passing `--database <name>`) | `"db"` |
+| `auto-refresh` | number | Refresh interval in minutes (equivalent to `--auto-refresh <n>`) | `1` |
+| `ignore-unsupported-versions` | bool | Bypass the version check by default (equivalent to `--ignore-unsupported-versions`) | `false` |
+
+This Add-On will create between 1 and 2 configuration files, depending on if any user-defined defaults are provided
+1. `.ddev/datagrip/config.yaml` -- This file is always generated and only contains the `uuid` of the data source (generated on first run). Any subsequent execution of the `ddev datagrip` command will use this UUID. **This should never be modified manually**. If the UUID must be regenerated for any reason, pass `--reset` (note this will reset all configuration and remove any project files, including SQL scripts and scratch files). 
+2. `.ddev/datagrip/.user-config.yaml` -- This file is generated only when a user directly sets a default via `ddev datagrip config set <key> <value>`. As well, a `.gitignore` is generated next to this file which ignores it so it is not commited to the repo. This allows for the `uuid` to be commited, but user preferences to remain local. This file and the `.gitignore` will remain even if all options are unset. They are removed if `--reset` is provided.
+
+Configuration can be modified by the user by using the `ddev datagrip config <subcommand> [args]` command. Use `ddev datagrip config` to learn what configuration options are available and how to view and/or modify them.
 
 # Update Philosphy
 JetBrains reserves the right to change how DataGrip is configured at any time, and this configuration may or may not be backwards compatible with older versions. Therefore, this Add-On will only ever be developed & tested on the latest version of DataGrip (**including** EAP versions). Personally, I have tested this Add-On with DataGrip 2025.2.5 and later – including 2026.1 – with success.
