@@ -15,55 +15,55 @@
 # CI target: ubuntu-latest. Tests assume Linux paths and tools (uuidgen, awk,
 # mktemp, /proc/sys/kernel/random/uuid). They are NOT expected to pass on macOS
 # without adjustments to the Toolbox state.json path.
+#
+# ─── Performance design ──────────────────────────────────────────────────────
+# Heavy operations (ddev config, ddev start, add-on install) happen ONCE in
+# setup_file rather than per-test. Per-test setup() does only fast cleanup
+# (rm of a few files) so each test starts from a known clean state.
+#
+# This reduces total test time from ~27 minutes (60s × 27 tests) to under 3
+# minutes for the non-release suite. The cost is weaker isolation: a test
+# that mutates shared state in ways the cleanup doesn't anticipate could
+# cascade. Cleanup wipes everything we know any test touches.
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Setup / teardown
+#  setup_file / teardown_file — runs ONCE per file
 # ═══════════════════════════════════════════════════════════════════════════
 
-setup() {
+setup_file() {
   set -eu -o pipefail
 
   export GITHUB_REPO=natereprogle/ddev-datagrip
 
   TEST_BREW_PREFIX="$(brew --prefix 2>/dev/null || true)"
   export BATS_LIB_PATH="${BATS_LIB_PATH:-}:${TEST_BREW_PREFIX}/lib:/usr/lib/bats"
-  bats_load_library bats-assert
-  bats_load_library bats-file
-  bats_load_library bats-support
 
+  # The path to the add-on repo root (where install.yaml lives).
   export DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
   export PROJNAME="test-$(basename "${GITHUB_REPO}")"
   mkdir -p ~/tmp
 
-  # Allocate two separate tempdirs:
+  # Allocate two SIBLING tempdirs (not parent/child — ddev rejects that):
   #   TESTDIR — the ddev project root
   #   FAKEHOME — overridden $HOME for the test
-  # These MUST be siblings, not parent/child. ddev refuses to create a project
-  # if the project dir is a parent of $HOME (or vice versa), so nesting one
-  # inside the other will fail with "a project is not allowed in the parent
-  # directory of your home directory".
   export TESTDIR=$(mktemp -d ~/tmp/${PROJNAME}.XXXXXX)
   export FAKEHOME=$(mktemp -d ~/tmp/${PROJNAME}-home.XXXXXX)
   export DDEV_NONINTERACTIVE=true
   export DDEV_NO_INSTRUMENTATION=true
 
-  # Override HOME so anything the script writes there (~/.pgpass, fake Toolbox
-  # state.json, etc.) lands in the test sandbox instead of the runner's home.
-  # ddev itself reads $HOME/.ddev/, but we don't depend on any pre-existing
-  # global ddev config.
+  # Override HOME so writes (~/.pgpass, fake state.json) land in the sandbox.
   export REAL_HOME="$HOME"
   export HOME="$FAKEHOME"
 
+  # Clean up any leftover project from a prior run, then create + start ours.
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
   cd "${TESTDIR}"
-  run ddev config --project-name="${PROJNAME}" --project-tld=ddev.site
-  assert_success
-  run ddev start -y
-  assert_success
+  ddev config --project-name="${PROJNAME}" --project-tld=ddev.site >/dev/null
+  ddev start -y >/dev/null
 
-  # Fake `datagrip` binary on PATH. Captures the args it was called with so
-  # tests can verify launch-time behavior. Uses a tab-stripping heredoc so the
-  # shebang lands on the first column.
+  # Fake `datagrip` binary on PATH. Tab-stripping heredoc keeps shebang on
+  # column 1. The stub captures invocation args to TESTDIR/datagrip-launch.log.
   cat > "${TESTDIR}/datagrip" <<-'EOF'
 	#!/bin/bash
 	echo "datagrip stub called with: $*" > "${TESTDIR}/datagrip-launch.log"
@@ -71,37 +71,71 @@ setup() {
 EOF
   chmod +x "${TESTDIR}/datagrip"
   export PATH="${TESTDIR}:${PATH}"
+
+  # Install the add-on once. This writes commands/host/datagrip and
+  # commands/host/datagrip-lib/* into the project's .ddev/ directory.
+  # We use `ddev utility refresh-custom-commands` instead of `ddev restart`
+  # to register the new commands without paying the ~30s restart cost.
+  ddev add-on get "${DIR}" >/dev/null
+  ddev utility refresh-custom-commands >/dev/null
 }
 
-teardown() {
+teardown_file() {
   set -eu -o pipefail
-  ddev delete -Oy ${PROJNAME} >/dev/null 2>&1 || true
-  # Restore real HOME so any post-teardown bats internals don't get confused.
+  ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
   if [[ -n "${REAL_HOME:-}" ]]; then
     export HOME="$REAL_HOME"
   fi
-  [ "${TESTDIR}" != "" ] && rm -rf "${TESTDIR}"
+  [ "${TESTDIR:-}" != "" ] && rm -rf "${TESTDIR}"
   [ "${FAKEHOME:-}" != "" ] && rm -rf "${FAKEHOME}"
 }
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+#  setup / teardown — runs PER TEST, fast cleanup only
+# ═══════════════════════════════════════════════════════════════════════════
 
-# Install the add-on from the local repo into the current ddev project.
-install_addon() {
-  run ddev add-on get "${DIR}"
-  assert_success
-  run ddev restart -y
-  assert_success
+setup() {
+  set -eu -o pipefail
+  bats_load_library bats-assert
+  bats_load_library bats-file
+  bats_load_library bats-support
+
+  # Reset all per-test mutable state so each test starts clean. Tests have
+  # a small, well-defined set of side effects:
+  #   - $HOME/.pgpass and $HOME/.pgpass.bak (pgpass tests)
+  #   - $HOME/.local/share/JetBrains/Toolbox/state.json (version-check tests)
+  #   - .ddev/datagrip/.user-config.yaml (config tests)
+  #   - .ddev/datagrip/.gitignore (config tests)
+  #   - .ddev/datagrip/config.yaml — DELIBERATELY preserved across tests so
+  #     the project UUID stays stable; tests that need a fresh UUID call
+  #     `ddev datagrip --reset` explicitly.
+  #   - .ddev/datagrip/.idea/ — preserved unless --reset is invoked.
+  #
+  # The user-config wipe is critical: tests that rely on default behavior
+  # would otherwise see leftover settings from a previous test.
+  rm -f "${HOME}/.pgpass" "${HOME}/.pgpass.bak"
+  rm -rf "${HOME}/.local/share/JetBrains"
+  rm -f "${TESTDIR}/.ddev/datagrip/.user-config.yaml"
+  rm -f "${TESTDIR}/.ddev/datagrip/.gitignore"
 }
 
-# Reconfigure the project to use Postgres instead of the default MySQL.
-# Used by tests that exercise the pg-pass codepath. Adds noticeable runtime
-# (a full restart), so only call when needed.
+# No teardown() needed — setup() of the next test handles cleanup, and
+# teardown_file() handles final cleanup.
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
+
+# Reconfigure the project to use Postgres and restart. This is expensive
+# (~30-60s) so it's used by exactly one test that needs the postgres path.
+# After the test, it switches the project back to mysql so subsequent tests
+# (and teardown_file) operate on the original config.
 switch_to_postgres() {
-  run ddev config --database=postgres:16
-  assert_success
-  run ddev restart -y
-  assert_success
+  ddev config --database=postgres:16 >/dev/null
+  ddev restart -y >/dev/null
+}
+
+switch_to_mysql() {
+  ddev config --database=mysql:8.0 >/dev/null
+  ddev restart -y >/dev/null
 }
 
 # The original health check — runs the command and asserts it exits cleanly.
@@ -110,45 +144,41 @@ health_checks() {
   assert_success
 }
 
-# Path to the project's idea/datasources XML.
-datasources_xml_path() {
-  echo "${TESTDIR}/.ddev/datagrip/.idea/dataSources.xml"
-}
-
-datasources_local_xml_path() {
-  echo "${TESTDIR}/.ddev/datagrip/.idea/dataSources.local.xml"
-}
-
-# Path to the project-shared config (UUID lives here).
-project_config_path() {
-  echo "${TESTDIR}/.ddev/datagrip/config.yaml"
-}
-
-# Path to the per-user config.
-user_config_path() {
-  echo "${TESTDIR}/.ddev/datagrip/.user-config.yaml"
-}
+# Path helpers
+datasources_xml_path() { echo "${TESTDIR}/.ddev/datagrip/.idea/dataSources.xml"; }
+datasources_local_xml_path() { echo "${TESTDIR}/.ddev/datagrip/.idea/dataSources.local.xml"; }
+project_config_path() { echo "${TESTDIR}/.ddev/datagrip/config.yaml"; }
+user_config_path() { echo "${TESTDIR}/.ddev/datagrip/.user-config.yaml"; }
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Install / smoke tests (preserved from original)
+#  Smoke test — verifies setup_file did its job
 # ═══════════════════════════════════════════════════════════════════════════
 
-@test "install from directory" {
-  set -eu -o pipefail
-  echo "# ddev add-on get ${DIR} with project ${PROJNAME} in $(pwd)" >&3
-  install_addon
+@test "smoke: add-on installed and datagrip command available" {
+  # If setup_file failed silently the add-on wouldn't be installed.
+  assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip"
+  assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
+  assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib/config.sh"
   health_checks
 }
 
 # bats test_tags=release
 @test "install from release" {
-  set -eu -o pipefail
+  # This test installs from the GitHub release, not the local directory.
+  # It necessarily does its own ddev work and pays the full setup cost.
+  # The test_tags=release decorator means CI can skip it via --filter-tags '!release'.
   echo "# ddev add-on get ${GITHUB_REPO} with project ${PROJNAME} in $(pwd)" >&3
   run ddev add-on get "${GITHUB_REPO}"
   assert_success
-  run ddev restart -y
+  run ddev utility refresh-custom-commands
   assert_success
   health_checks
+  # Re-install the local version so the rest of the suite uses the code we're
+  # testing, not whatever's on the GitHub release.
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev utility refresh-custom-commands
+  assert_success
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -156,21 +186,15 @@ user_config_path() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 @test "datasources.xml is written with the project UUID" {
-  install_addon
   run ddev datagrip
   assert_success
-
-  # Both XML files should exist
   assert_file_exists "$(datasources_xml_path)"
   assert_file_exists "$(datasources_local_xml_path)"
-
-  # Project config should exist with a UUID line
   assert_file_exists "$(project_config_path)"
   run grep -E '^uuid:' "$(project_config_path)"
   assert_success
 
-  # Extract the UUID from config.yaml and assert it appears in dataSources.xml.
-  # The yaml stores the value quoted, so strip surrounding quotes.
+  # UUID in config.yaml must appear in both XML files.
   uuid_in_config="$(awk -F: '/^uuid:/ {gsub(/[ "]/, "", $2); print $2}' "$(project_config_path)")"
   [[ -n "$uuid_in_config" ]]
   run grep -F "$uuid_in_config" "$(datasources_xml_path)"
@@ -180,42 +204,30 @@ user_config_path() {
 }
 
 @test "uuid is RFC 4122 v4 format" {
-  install_addon
   run ddev datagrip
   assert_success
-
   uuid="$(awk -F: '/^uuid:/ {gsub(/[ "]/, "", $2); print $2}' "$(project_config_path)")"
-  # 8-4-4-4-12 hex, version nibble 4, variant nibble 8/9/a/b
   [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
 }
 
 @test "uuid persists across runs" {
-  install_addon
-
   run ddev datagrip
   assert_success
   uuid_first="$(awk -F: '/^uuid:/ {gsub(/[ "]/, "", $2); print $2}' "$(project_config_path)")"
-
   run ddev datagrip
   assert_success
   uuid_second="$(awk -F: '/^uuid:/ {gsub(/[ "]/, "", $2); print $2}' "$(project_config_path)")"
-
   [[ "$uuid_first" == "$uuid_second" ]]
 }
 
 @test "--reset regenerates the uuid" {
-  install_addon
-
   run ddev datagrip
   assert_success
   uuid_before="$(awk -F: '/^uuid:/ {gsub(/[ "]/, "", $2); print $2}' "$(project_config_path)")"
-
   run ddev datagrip --reset
   assert_success
   uuid_after="$(awk -F: '/^uuid:/ {gsub(/[ "]/, "", $2); print $2}' "$(project_config_path)")"
-
   [[ "$uuid_before" != "$uuid_after" ]]
-  # New UUID should be in the (rewritten) XML files
   run grep -F "$uuid_after" "$(datasources_xml_path)"
   assert_success
 }
@@ -225,15 +237,12 @@ user_config_path() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 @test "config list shows '(no user config set)' when nothing is set" {
-  install_addon
   run ddev datagrip config list
   assert_success
   assert_output --partial "(no user config set)"
 }
 
 @test "config set writes a value and config get reads it back" {
-  install_addon
-
   run ddev datagrip config set pg-pass true
   assert_success
   assert_output --partial "Set pg-pass = true"
@@ -242,16 +251,12 @@ user_config_path() {
   assert_success
   assert_output --partial "true"
 
-  # The user-config file should exist
   assert_file_exists "$(user_config_path)"
 }
 
 @test "config set creates a .gitignore excluding the user config" {
-  install_addon
-
   run ddev datagrip config set pg-pass true
   assert_success
-
   gitignore="${TESTDIR}/.ddev/datagrip/.gitignore"
   assert_file_exists "$gitignore"
   run grep -F ".user-config.yaml" "$gitignore"
@@ -259,50 +264,38 @@ user_config_path() {
 }
 
 @test "config set rejects unknown keys" {
-  install_addon
-
   run ddev datagrip config set nope-key foo
   assert_failure
   assert_output --partial "Unknown config key"
 }
 
 @test "config set rejects invalid bool values" {
-  install_addon
-
   run ddev datagrip config set pg-pass yes
   assert_failure
   assert_output --partial "expects 'true' or 'false'"
 }
 
 @test "config set rejects invalid number values" {
-  install_addon
-
   run ddev datagrip config set auto-refresh fast
   assert_failure
   assert_output --partial "expects a number"
 }
 
 @test "config unset removes a key" {
-  install_addon
-
   run ddev datagrip config set default-database mydb
   assert_success
-
   run ddev datagrip config get default-database
   assert_success
   assert_output --partial "mydb"
 
   run ddev datagrip config unset default-database
   assert_success
-
   run ddev datagrip config get default-database
   assert_success
   assert_output --partial "(unset)"
 }
 
 @test "config list shows multiple set values" {
-  install_addon
-
   run ddev datagrip config set pg-pass true
   assert_success
   run ddev datagrip config set default-database mydb
@@ -318,16 +311,12 @@ user_config_path() {
 }
 
 @test "config path prints the per-user config file path" {
-  install_addon
-
   run ddev datagrip config path
   assert_success
   assert_output --partial ".user-config.yaml"
 }
 
 @test "config with no subcommand prints help" {
-  install_addon
-
   run ddev datagrip config
   assert_success
   assert_output --partial "Usage: ddev datagrip config"
@@ -339,48 +328,36 @@ user_config_path() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 @test "default-database from config affects the JDBC URL" {
-  install_addon
-
   run ddev datagrip config set default-database custom_db
   assert_success
-
   run ddev datagrip
   assert_success
-
-  # The JDBC URL in dataSources.xml should reference custom_db
   run grep -F "/custom_db" "$(datasources_xml_path)"
   assert_success
 }
 
 @test "--no-defaults bypasses user config" {
-  install_addon
-
   run ddev datagrip config set default-database custom_db
   assert_success
 
-  # Without --no-defaults, custom_db should be used
+  # Without --no-defaults: custom_db
   run ddev datagrip
   assert_success
   run grep -F "/custom_db" "$(datasources_xml_path)"
   assert_success
 
-  # With --no-defaults, the hardcoded fallback "db" should be used
+  # With --no-defaults: hardcoded fallback "db"
   run ddev datagrip --no-defaults
   assert_success
   run grep -F "/db?" "$(datasources_xml_path)"
   assert_success
-  # And the custom value should NOT appear
   run grep -F "/custom_db" "$(datasources_xml_path)"
   assert_failure
 }
 
 @test "explicit --database flag wins over config default" {
-  install_addon
-
   run ddev datagrip config set default-database custom_db
   assert_success
-
-  # --database should override the config
   run ddev datagrip --database flag_db
   assert_success
   run grep -F "/flag_db" "$(datasources_xml_path)"
@@ -392,86 +369,62 @@ user_config_path() {
 # ═══════════════════════════════════════════════════════════════════════════
 #  Postgres + pg-pass
 #
-#  The three postgres assertion groups are merged into one test to amortize
-#  the project-restart cost (~30-60s per restart on free-tier CI). Cleanup
-#  between groups is explicit: each group resets ~/.pgpass and the user
-#  config so the next group's assertions are meaningful.
+#  Switching to postgres requires a real ddev restart (~30-60s). To minimize
+#  that cost we have ONE postgres test that exercises three assertion groups
+#  with explicit cleanup between them.
 #
-#  The non-postgres test (which doesn't trigger a restart) stays separate
-#  because merging it in wouldn't save runtime and would muddy the failure
-#  diagnostics.
+#  The test switches back to mysql at the end so subsequent tests (and
+#  teardown_file) operate on the standard mysql config.
 # ═══════════════════════════════════════════════════════════════════════════
 
 @test "pg-pass: postgres project — flag, config-driven, and --no-defaults bypass" {
-  install_addon
   switch_to_postgres
 
-  # ─── Group 1: --pg-pass flag writes to $HOME/.pgpass ──────────────────
-  # The script writes to $HOME/.pgpass; setup() overrode HOME so this is
-  # the sandbox HOME, not the runner's real home.
+  # Group 1: --pg-pass flag writes to $HOME/.pgpass
   run ddev datagrip --pg-pass
   assert_success
   assert_file_exists "$HOME/.pgpass"
   run grep -F "${PROJNAME}.ddev.site" "$HOME/.pgpass"
   assert_success
 
-  # Cleanup before next group: reset pgpass and config to a clean slate.
-  # Note: this means each group is treated as "first use" by the script,
-  # so the .pgpass.bak creation message will fire each time. We don't
-  # assert on that message, only on the contents of .pgpass, so it's fine.
   rm -f "$HOME/.pgpass" "$HOME/.pgpass.bak"
   rm -f "$(user_config_path)"
 
-  # ─── Group 2: config-set pg-pass=true triggers pgpass without flag ────
+  # Group 2: config-set pg-pass=true triggers pgpass without flag
   run ddev datagrip config set pg-pass true
   assert_success
-
   run ddev datagrip
   assert_success
   assert_file_exists "$HOME/.pgpass"
   run grep -F "${PROJNAME}.ddev.site" "$HOME/.pgpass"
   assert_success
 
-  # Cleanup: keep the config (we want pg-pass=true for the next group)
-  # but clear the pgpass file so we can verify it does NOT get rewritten.
   rm -f "$HOME/.pgpass" "$HOME/.pgpass.bak"
 
-  # ─── Group 3: --no-defaults bypasses config-driven pgpass ─────────────
-  # pg-pass=true is still in the user config from group 2. With
-  # --no-defaults, the config should be ignored and pgpass not written.
+  # Group 3: --no-defaults bypasses config-driven pgpass
   run ddev datagrip --no-defaults
   assert_success
-
-  # File either doesn't exist or doesn't contain our project. Either is OK.
   if [[ -f "$HOME/.pgpass" ]]; then
     run grep -F "${PROJNAME}.ddev.site" "$HOME/.pgpass"
     assert_failure
   fi
+
+  # Switch back to mysql for subsequent tests + teardown_file.
+  switch_to_mysql
 }
 
 @test "pg-pass on non-postgres project warns and is a no-op" {
-  install_addon
-  # Default project is mysql — don't switch
-
+  # Default project is mysql (or restored to mysql by the previous test).
   run ddev datagrip --pg-pass
   assert_success
   assert_output --partial "--pg-pass cannot be used without a Postgres DB"
-
-  # No pgpass file should have been written
   assert_file_not_exists "$HOME/.pgpass"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Version check
-#
-#  The host command runs on the host machine, NOT inside a container. ddev
-#  spawns it with the host's environment, but we still need to be careful
-#  about where it looks for state.json. Our setup() overrides HOME, so a
-#  fake state.json placed under $HOME/.local/share/JetBrains/Toolbox/ will
-#  be picked up by the version-check helper's Linux path lookup.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Helper: write a fake Toolbox state.json with the given DataGrip version.
 write_fake_toolbox_state_json() {
   local version="$1"
   local toolbox_dir="$HOME/.local/share/JetBrains/Toolbox"
@@ -495,9 +448,7 @@ EOF
 }
 
 @test "version check detects DataGrip from fake Toolbox state.json" {
-  install_addon
   write_fake_toolbox_state_json "2099.1.2"
-
   run ddev datagrip
   assert_success
   assert_output --partial "Detected DataGrip 2099.1.2"
@@ -505,37 +456,22 @@ EOF
 }
 
 @test "version check falls back gracefully when no state.json exists" {
-  install_addon
-  # No fake state.json, no product-info.json on disk, no real DataGrip.
-  # The check should print "Unable to check" and continue.
+  # setup() wipes state.json each test; no need to do it again here.
   run ddev datagrip
   assert_success
   assert_output --partial "Unable to check installed DataGrip version"
 }
 
-# Source the version-check library directly and run unit-style tests against
-# the comparison logic. Avoids the cost of a full ddev round-trip.
 @test "version check unit: comparison handles 2024.10 vs 2024.2 correctly" {
-  install_addon
-
-  # Source the helper directly. SCRIPT_DIR is the helper dir; we need to
-  # source from the installed location inside .ddev/.
   source "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
-
-  # 2024.10 should be greater than 2024.2 (the lexicographic trap)
   _version_ge "2024.10" "2024.2"
   assert_equal "$?" "0"
-
-  # Reverse: 2024.2 should NOT be greater than or equal to 2024.10
   run _version_ge "2024.2" "2024.10"
   assert_failure
 }
 
 @test "version check unit: EAP suffix is stripped before comparing" {
-  install_addon
   source "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
-
-  # "2026.1 EAP" should compare equal to "2026.1"
   _version_ge "2026.1 EAP" "2026.1"
   assert_equal "$?" "0"
   _version_ge "2026.1" "2026.1 EAP"
@@ -543,13 +479,8 @@ EOF
 }
 
 @test "version check unit: detects too-old version with controlled minimum" {
-  install_addon
   write_fake_toolbox_state_json "2020.1"
-
   source "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
-
-  # Run the public entry point directly with a minimum the fake version
-  # doesn't satisfy. Should return 2.
   run datagrip_version_check "2024.1" "false" "linux"
   assert_failure
   [[ "$status" == "2" ]]
@@ -557,33 +488,25 @@ EOF
 }
 
 @test "version check unit: --ignore-unsupported-versions bypasses block" {
-  install_addon
   write_fake_toolbox_state_json "2020.1"
-
   source "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
-
-  # With ignore=true, even a too-old version should pass through
   run datagrip_version_check "2024.1" "true" "linux"
   assert_success
   assert_output --partial "but --ignore-unsupported-versions was passed"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Removal
+#  Removal — runs LAST because it uninstalls the add-on
+#
+#  Bats runs tests in file order, so as long as this stays at the bottom of
+#  the file, no subsequent test depends on the add-on being installed.
 # ═══════════════════════════════════════════════════════════════════════════
 
 @test "removal cleans up datagrip-lib directory" {
-  install_addon
-
-  # Directory exists after install
   assert_dir_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib"
-
   run ddev add-on remove datagrip
   assert_success
-
-  # Both the main script and the lib directory should be gone
   assert_file_not_exists "${TESTDIR}/.ddev/commands/host/datagrip"
   assert_dir_not_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib"
-  # Runtime data should also be gone
   assert_dir_not_exists "${TESTDIR}/.ddev/datagrip"
 }

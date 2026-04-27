@@ -203,13 +203,20 @@ fi
 echo "✅ Project ${DDEV_PROJECT} is running!"
 echo "🔄 Preparing DataGrip datasource..."
 
-# Check for first-run or reset for proper messaging later on.
+# Check for first-run for proper messaging later on.
 # FIRST_RUN is true if the dataSources subdir doesn't exist yet — DataGrip
 # creates that subdir on its first successful introspection, so its presence
 # means the user has connected at least once.
+#
+# Note: FIRST_RUN and RESET are independent. A user can run --reset before
+# DataGrip has ever introspected (e.g. to clear a corrupted config), and we
+# need reset behavior to fire in that case. Earlier versions used `elif`
+# here, which made --reset a no-op when no introspection had happened yet.
 if [[ ! -d "${DDEV_APPROOT}/.ddev/datagrip/.idea/dataSources" ]]; then
   FIRST_RUN=true
-elif [[ "$RESET" == true ]]; then
+fi
+
+if [[ "$RESET" == true ]]; then
   rm -rf "${DDEV_APPROOT}/.ddev/datagrip/.idea"
   # Regenerate the project UUID on reset so the new datasource is treated as
   # entirely separate from the old one (no stale keychain / schema-cache ties).
