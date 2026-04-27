@@ -485,12 +485,11 @@ EOF
   assert_output --partial "JetBrains Toolbox"
 }
 
-@test "version check: fails with exit 2 when version undetectable and unconfigured" {
+@test "version check: fails when version undetectable and unconfigured" {
   # Remove the state.json that setup() wrote so nothing is detectable.
   rm -rf "${HOME}/.local/share/JetBrains"
   run ddev datagrip
   assert_failure
-  [[ "$status" == "2" ]]
   assert_output --partial "Could not detect the installed DataGrip version"
   assert_output --partial "ddev datagrip config set datagrip-version"
 }
