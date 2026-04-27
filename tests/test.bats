@@ -34,7 +34,16 @@ setup() {
   export DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
   export PROJNAME="test-$(basename "${GITHUB_REPO}")"
   mkdir -p ~/tmp
+
+  # Allocate two separate tempdirs:
+  #   TESTDIR — the ddev project root
+  #   FAKEHOME — overridden $HOME for the test
+  # These MUST be siblings, not parent/child. ddev refuses to create a project
+  # if the project dir is a parent of $HOME (or vice versa), so nesting one
+  # inside the other will fail with "a project is not allowed in the parent
+  # directory of your home directory".
   export TESTDIR=$(mktemp -d ~/tmp/${PROJNAME}.XXXXXX)
+  export FAKEHOME=$(mktemp -d ~/tmp/${PROJNAME}-home.XXXXXX)
   export DDEV_NONINTERACTIVE=true
   export DDEV_NO_INSTRUMENTATION=true
 
@@ -43,8 +52,7 @@ setup() {
   # ddev itself reads $HOME/.ddev/, but we don't depend on any pre-existing
   # global ddev config.
   export REAL_HOME="$HOME"
-  export HOME="$TESTDIR/home"
-  mkdir -p "$HOME"
+  export HOME="$FAKEHOME"
 
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
   cd "${TESTDIR}"
@@ -73,6 +81,7 @@ teardown() {
     export HOME="$REAL_HOME"
   fi
   [ "${TESTDIR}" != "" ] && rm -rf "${TESTDIR}"
+  [ "${FAKEHOME:-}" != "" ] && rm -rf "${FAKEHOME}"
 }
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
