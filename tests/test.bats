@@ -21,7 +21,7 @@
 # setup_file rather than per-test. Per-test setup() does only fast cleanup
 # (rm of a few files) so each test starts from a known clean state.
 #
-# This reduces total test time from ~27 minutes (60s × 27 tests) to under 3
+# This reduces total test time from ~27 minutes (60s * 27 tests) to under 3
 # minutes for the non-release suite. The cost is weaker isolation: a test
 # that mutates shared state in ways the cleanup doesn't anticipate could
 # cascade. Cleanup wipes everything we know any test touches.
@@ -145,6 +145,11 @@ setup() {
     rm -f "${project_dir}/.ddev/datagrip/.gitignore"
   done
 
+  # Write a fake Toolbox state.json so version detection succeeds for all
+  # tests by default. Tests that specifically exercise the "no version
+  # detected" path must remove this file explicitly.
+  write_fake_toolbox_state_json "2025.2.5"
+
   # Most tests run against the mysql project. The postgres test cd's to
   # PG_TESTDIR explicitly. We always start each test in TESTDIR so the
   # default working dir is predictable.
@@ -179,6 +184,9 @@ pg_user_config_path() { echo "${PG_TESTDIR}/.ddev/datagrip/.user-config.yaml"; }
   assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip"
   assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
   assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib/config.sh"
+  assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib/versions.json"
+  assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib/versions/2025.2.5.sh"
+  assert_file_exists "${TESTDIR}/.ddev/commands/host/datagrip-lib/versions/unsupported.sh"
   health_checks
 }
 
@@ -477,11 +485,32 @@ EOF
   assert_output --partial "JetBrains Toolbox"
 }
 
-@test "version check falls back gracefully when no state.json exists" {
-  # setup() wipes state.json each test; no need to do it again here.
+@test "version check: fails with exit 2 when version undetectable and unconfigured" {
+  # Remove the state.json that setup() wrote so nothing is detectable.
+  rm -rf "${HOME}/.local/share/JetBrains"
+  run ddev datagrip
+  assert_failure
+  [[ "$status" == "2" ]]
+  assert_output --partial "Could not detect the installed DataGrip version"
+  assert_output --partial "ddev datagrip config set datagrip-version"
+}
+
+@test "version check: configured datagrip-version is used when detection fails" {
+  rm -rf "${HOME}/.local/share/JetBrains"
+  run ddev datagrip config set datagrip-version 2025.2.5
+  assert_success
   run ddev datagrip
   assert_success
-  assert_output --partial "Unable to check installed DataGrip version"
+  assert_output --partial "Using configured version: 2025.2.5"
+}
+
+@test "version check: warning shown when configured version differs from detected" {
+  # setup() wrote state.json for 2025.2.5; configure a different version.
+  run ddev datagrip config set datagrip-version 2025.3.0
+  assert_success
+  run ddev datagrip
+  assert_success
+  assert_output --partial "but datagrip-version is configured as 2025.3.0"
 }
 
 @test "version check unit: comparison handles 2024.10 vs 2024.2 correctly" {
@@ -500,21 +529,32 @@ EOF
   assert_equal "$?" "0"
 }
 
-@test "version check unit: detects too-old version with controlled minimum" {
-  write_fake_toolbox_state_json "2020.1"
+@test "version manifest: supported version maps to the highest matching script" {
   source "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
-  run datagrip_version_check "2024.1" "false" "linux"
-  assert_failure
-  [[ "$status" == "2" ]]
-  assert_output --partial "older than the minimum"
+  manifest="${TESTDIR}/.ddev/commands/host/datagrip-lib/versions.json"
+
+  datagrip_find_version_script "2025.2.5" "$manifest"
+  assert_equal "$_DG_VERSION_SCRIPT" "2025.2.5.sh"
+
+  # Version above the minimum but below any hypothetical next entry also maps
+  # to the same script (highest-key-le-detected wins).
+  datagrip_find_version_script "2025.3.0" "$manifest"
+  assert_equal "$_DG_VERSION_SCRIPT" "2025.2.5.sh"
 }
 
-@test "version check unit: --ignore-unsupported-versions bypasses block" {
-  write_fake_toolbox_state_json "2020.1"
+@test "version manifest: old version maps to unsupported.sh" {
   source "${TESTDIR}/.ddev/commands/host/datagrip-lib/version-check.sh"
-  run datagrip_version_check "2024.1" "true" "linux"
-  assert_success
-  assert_output --partial "but --ignore-unsupported-versions was passed"
+  manifest="${TESTDIR}/.ddev/commands/host/datagrip-lib/versions.json"
+  datagrip_find_version_script "2020.1" "$manifest"
+  assert_equal "$_DG_VERSION_SCRIPT" "unsupported.sh"
+}
+
+@test "version manifest: unsupported version exits with failure message" {
+  write_fake_toolbox_state_json "2020.1"
+  run ddev datagrip
+  assert_failure
+  assert_output --partial "below the minimum supported version"
+  assert_output --partial "ddev datagrip config set datagrip-version"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

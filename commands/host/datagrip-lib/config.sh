@@ -37,7 +37,7 @@ _DG_VALID_KEYS=(
   "pg-pass:bool"
   "default-database:string"
   "auto-refresh:number"
-  "ignore-unsupported-versions:bool"
+  "datagrip-version:string"
 )
 
 # ─── UUID generation ────────────────────────────────────────────────────────

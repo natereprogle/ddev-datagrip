@@ -3,24 +3,29 @@
 #
 # datagrip-lib/version-check.sh
 # ─────────────────────────────────────────────────────────────────────────────
-# Best-effort detection of the installed DataGrip version, with comparison
-# against a hardcoded minimum. Sourced by ../datagrip.
+# Detection of the installed DataGrip version and version-to-script manifest
+# lookup. Sourced by ../datagrip.
 #
-# This file is meant to be `source`d, not executed. It exposes:
+# Public interface:
 #
-#   datagrip_version_check <minimum_version> <ignore_flag>
-#     Prints status messages. Returns:
-#       0 — version is OK, or could not be determined (best-effort), or the
-#           caller passed --ignore-unsupported-versions
-#       2 — version was determined and is below minimum
+#   datagrip_detect_version <platform>
+#     Detects the installed DataGrip version. Sets globals:
+#       _DG_DETECTED_VERSION — version string, or empty if undetectable
+#       _DG_VERSION_SOURCE   — human-readable description of where it was found
+#     Prints a status line when detection succeeds. Returns 0 if detected, 1
+#     if not.
+#
+#   datagrip_find_version_script <version> <manifest_path>
+#     Finds the script filename for the given version from the JSON manifest.
+#     Sets global:
+#       _DG_VERSION_SCRIPT — basename of the matching script (e.g. "2025.2.5.sh")
+#     Returns 0 if found, 1 on error or no match.
 #
 # Detection strategy, stopping at the first successful version read:
 #   1. JetBrains Toolbox state.json (the structured, authoritative source)
 #   2. Toolbox launchCommand → product-info.json next to the binary
 #   3. Well-known install paths per platform
 #   4. `datagrip` binary on PATH → product-info.json walked up from there
-#
-# Falls back silently with an informational message if nothing is found.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── JSON extraction ────────────────────────────────────────────────────────
@@ -256,57 +261,76 @@ _version_ge() {
   '
 }
 
-# ─── Public entry point ─────────────────────────────────────────────────────
+# ─── Manifest parsing ────────────────────────────────────────────────────────
 
-# Run the version check.
+# Parse a flat JSON manifest {"key": "value", ...} and print "key=value" lines.
+_parse_versions_manifest() {
+  local manifest="$1"
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -r 'to_entries[] | "\(.key)=\(.value)"' "$manifest" 2>/dev/null
+    return 0
+  fi
+
+  # Fallback: match lines of the form:   "key": "value"[,]
+  # Split on " gives: $1=leading ws, $2=key, $3=": ", $4=value, rest=trailing
+  awk -F'"' '
+    /^[[:space:]]*"[^"]*"[[:space:]]*:[[:space:]]*"[^"]*"/ {
+      print $2 "=" $4
+    }
+  ' "$manifest"
+}
+
+# ─── Public entry points ─────────────────────────────────────────────────────
+
+# Detect the installed DataGrip version.
 # Args:
-#   $1 — minimum required version (e.g. "2024.1")
-#   $2 — "true" if --ignore-unsupported-versions was passed, else "false"
-#   $3 — PLATFORM string (macos, linux, wsl, windows, unknown)
+#   $1 — PLATFORM string (macos, linux, wsl, windows, unknown)
 #
-# Returns:
-#   0 — proceed (version OK, undetectable, or ignore flag set)
-#   2 — abort (version below minimum)
-datagrip_version_check() {
-  local min_version="$1"
-  local ignore="$2"
-  local platform="$3"
-  local detected_version=""
-  local detection_source=""
+# Sets globals (no stdout for version — avoids subshell issues):
+#   _DG_DETECTED_VERSION — detected version string, or empty
+#   _DG_VERSION_SOURCE   — human-readable detection source, or empty
+#
+# Prints a status line when detection succeeds.
+# Returns 0 if detected, 1 if not.
+datagrip_detect_version() {
+  local platform="$1"
+  _DG_DETECTED_VERSION=""
+  _DG_VERSION_SOURCE=""
 
-  # ─── Step 1: Toolbox state.json ────────────────────────────────────────
+  # ─── Step 1: Toolbox state.json ──────────────────────────────────────────
   local state_json
   state_json="$(_find_toolbox_state_json "$platform")"
   if [[ -n "$state_json" ]]; then
-    detected_version="$(_extract_toolbox_version "$state_json")"
-    if [[ -n "$detected_version" ]]; then
-      detection_source="JetBrains Toolbox"
+    _DG_DETECTED_VERSION="$(_extract_toolbox_version "$state_json")"
+    if [[ -n "$_DG_DETECTED_VERSION" ]]; then
+      _DG_VERSION_SOURCE="JetBrains Toolbox"
     else
-      # ─── Step 2: state.json had a launchCommand but no version we could parse ─
+      # ─── Step 2: state.json had a launchCommand but no parseable version ───
       local launch
       launch="$(_extract_toolbox_launch_command "$state_json")"
       if [[ -n "$launch" ]]; then
         local pi
         pi="$(_product_info_for_launch_command "$launch")"
         if [[ -n "$pi" ]]; then
-          detected_version="$(_extract_product_info_version "$pi")"
-          [[ -n "$detected_version" ]] && detection_source="Toolbox-recorded install ($pi)"
+          _DG_DETECTED_VERSION="$(_extract_product_info_version "$pi")"
+          [[ -n "$_DG_DETECTED_VERSION" ]] && _DG_VERSION_SOURCE="Toolbox-recorded install ($pi)"
         fi
       fi
     fi
   fi
 
-  # ─── Step 3: Well-known install paths ──────────────────────────────────
-  if [[ -z "$detected_version" ]]; then
+  # ─── Step 3: Well-known install paths ────────────────────────────────────
+  if [[ -z "$_DG_DETECTED_VERSION" ]]; then
     while IFS= read -r path_glob; do
       [[ -z "$path_glob" ]] && continue
       # The unquoted expansion below is intentional — these patterns may
       # contain * for version directories. We loop and pick the first match.
       for path in $path_glob; do
         if [[ -f "$path" ]]; then
-          detected_version="$(_extract_product_info_version "$path")"
-          if [[ -n "$detected_version" ]]; then
-            detection_source="$path"
+          _DG_DETECTED_VERSION="$(_extract_product_info_version "$path")"
+          if [[ -n "$_DG_DETECTED_VERSION" ]]; then
+            _DG_VERSION_SOURCE="$path"
             break 2
           fi
         fi
@@ -314,8 +338,8 @@ datagrip_version_check() {
     done < <(_well_known_install_paths "$platform")
   fi
 
-  # ─── Step 4: datagrip binary on PATH ───────────────────────────────────
-  if [[ -z "$detected_version" ]] && command -v datagrip >/dev/null 2>&1; then
+  # ─── Step 4: datagrip binary on PATH ─────────────────────────────────────
+  if [[ -z "$_DG_DETECTED_VERSION" ]] && command -v datagrip >/dev/null 2>&1; then
     local bin_path
     bin_path="$(command -v datagrip)"
     # Resolve symlinks (Toolbox shims, Homebrew shims) to find the real binary.
@@ -327,30 +351,79 @@ datagrip_version_check() {
     local pi
     pi="$(_product_info_for_launch_command "$bin_path")"
     if [[ -n "$pi" ]]; then
-      detected_version="$(_extract_product_info_version "$pi")"
-      [[ -n "$detected_version" ]] && detection_source="resolved from \`datagrip\` on PATH"
+      _DG_DETECTED_VERSION="$(_extract_product_info_version "$pi")"
+      [[ -n "$_DG_DETECTED_VERSION" ]] && _DG_VERSION_SOURCE="resolved from \`datagrip\` on PATH"
     fi
   fi
 
-  # ─── Decision ──────────────────────────────────────────────────────────
-  if [[ -z "$detected_version" ]]; then
-    echo "ℹ️  Unable to check installed DataGrip version, continuing..."
+  if [[ -n "$_DG_DETECTED_VERSION" ]]; then
+    echo "🔎 Detected DataGrip ${_DG_DETECTED_VERSION} (via ${_DG_VERSION_SOURCE})"
     return 0
   fi
 
-  echo "🔎 Detected DataGrip ${detected_version} (via ${detection_source})"
+  return 1
+}
 
-  if _version_ge "$detected_version" "$min_version"; then
+# Find the version-specific script filename for the given DataGrip version.
+# Args:
+#   $1 — DataGrip version string (e.g. "2025.2.5")
+#   $2 — path to versions.json manifest
+#
+# Sets global:
+#   _DG_VERSION_SCRIPT — script basename (e.g. "2025.2.5.sh"), or empty
+#
+# Matching rules:
+#   - Bare version keys (e.g. "2025.2.5") act as minimum-version thresholds.
+#     Among all matching bare keys (where detected >= key), the highest key wins.
+#   - Keys prefixed with "<" (e.g. "<2025.2.5") match when detected < key_version.
+#     These are checked only if no bare key matched.
+#
+# Returns 0 if a script was found, 1 on error or no match.
+datagrip_find_version_script() {
+  local version="$1"
+  local manifest="$2"
+  _DG_VERSION_SCRIPT=""
+
+  if [[ ! -f "$manifest" ]]; then
+    echo "❌ Version manifest not found: $manifest" >&2
+    return 1
+  fi
+
+  local best_key=""
+  local best_script=""
+  local range_script=""
+
+  while IFS='=' read -r key script; do
+    [[ -z "$key" || -z "$script" ]] && continue
+
+    if [[ "$key" == "<"* ]]; then
+      # Range key: matches when detected < stripped version
+      local range_ver="${key#<}"
+      if ! _version_ge "$version" "$range_ver"; then
+        range_script="$script"
+      fi
+    else
+      # Bare key: matches when detected >= key; prefer the highest matching key
+      if _version_ge "$version" "$key"; then
+        if [[ -z "$best_key" ]] || _version_ge "$key" "$best_key"; then
+          best_key="$key"
+          best_script="$script"
+        fi
+      fi
+    fi
+  done < <(_parse_versions_manifest "$manifest")
+
+  if [[ -n "$best_script" ]]; then
+    _DG_VERSION_SCRIPT="$best_script"
     return 0
   fi
 
-  if [[ "$ignore" == "true" ]]; then
-    echo "⚠️  DataGrip ${detected_version} is older than the minimum supported version (${min_version}), but --ignore-unsupported-versions was passed. Continuing."
+  if [[ -n "$range_script" ]]; then
+    _DG_VERSION_SCRIPT="$range_script"
     return 0
   fi
 
-  echo "❌ DataGrip ${detected_version} is older than the minimum supported version (${min_version})."
-  echo "   This add-on may work but hasn't been tested below the minimum."
-  echo "   To run anyway, rerun the command with --ignore-unsupported-versions"
-  return 2
+  echo "❌ No matching entry in version manifest for DataGrip ${version}." >&2
+  echo "   Check $(dirname "$manifest")/versions.json to add support for this version." >&2
+  return 1
 }

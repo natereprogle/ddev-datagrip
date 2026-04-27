@@ -19,6 +19,9 @@ project_files:
   - commands/host/datagrip
   - commands/host/datagrip-lib/version-check.sh
   - commands/host/datagrip-lib/config.sh
+  - commands/host/datagrip-lib/versions.json
+  - commands/host/datagrip-lib/versions/2025.2.5.sh
+  - commands/host/datagrip-lib/versions/unsupported.sh
   - datagrip/.gitignore
 
 # ─── Post-install actions ─────────────────────────────────────────────────────
@@ -32,6 +35,8 @@ post_install_actions:
     chmod +x "${DDEV_APPROOT}/.ddev/commands/host/datagrip"
     chmod +x "${DDEV_APPROOT}/.ddev/commands/host/datagrip-lib/version-check.sh"
     chmod +x "${DDEV_APPROOT}/.ddev/commands/host/datagrip-lib/config.sh"
+    chmod +x "${DDEV_APPROOT}/.ddev/commands/host/datagrip-lib/versions/2025.2.5.sh"
+    chmod +x "${DDEV_APPROOT}/.ddev/commands/host/datagrip-lib/versions/unsupported.sh"
 
 # ─── Removal actions ──────────────────────────────────────────────────────────
 # Order matters: remove the main command first, then the helper directory,
