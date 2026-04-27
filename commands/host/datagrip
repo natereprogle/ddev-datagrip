@@ -5,15 +5,8 @@
 ## Description: Support for opening databases in DataGrip
 ## Usage: datagrip
 ## Example: "ddev datagrip" or "ddev datagrip --database database2" to open a database named "database2"
-## Flags: [{"Name":"database","Shorthand":"d","Usage":"Database name"},{"Name":"reset","Shorthand":"r","Usage":"Reset DataGrip datasource. Manual refresh in DataGrip is required after launch"},{"Name":"auto-refresh","Shorthand":"a","Usage":"Sets the interval, in minutes, that DataGrip will refresh the datasource. Minimum 0.1 minute (6 seconds). Set to 0 to disable"},{"Name":"pg-pass","Shorthand":"p","Usage":"Allows projects using Postgres to utilize the .pgpass file instead of storing credentials in the project directory. Passing this argument is required EACH TIME the command is run. While these credentials are still well known and inherently safe to store, using .pgpass may be beneficial, such as organizations that perform scans on commits for credentials."},{"Name":"ignore-unsupported-versions","Shorthand":"i","Usage":"Bypass the DataGrip version check and run even if the installed version is below the minimum supported version."},{"Name":"no-defaults","Shorthand":"n","Usage":"Ignore all per-user config defaults for this invocation; use only CLI flags and hardcoded fallbacks. Useful for overriding a default such as 'pg-pass: true' for a single run. Run 'ddev datagrip config' to manage defaults."}]
+## Flags: [{"Name":"database","Shorthand":"d","Usage":"Database name"},{"Name":"reset","Shorthand":"r","Usage":"Reset DataGrip datasource. Manual refresh in DataGrip is required after launch"},{"Name":"auto-refresh","Shorthand":"a","Usage":"Sets the interval, in minutes, that DataGrip will refresh the datasource. Minimum 0.1 minute (6 seconds). Set to 0 to disable"},{"Name":"pg-pass","Shorthand":"p","Usage":"Allows projects using Postgres to utilize the .pgpass file instead of storing credentials in the project directory. Passing this argument is required EACH TIME the command is run. While these credentials are still well known and inherently safe to store, using .pgpass may be beneficial, such as organizations that perform scans on commits for credentials."},{"Name":"no-defaults","Shorthand":"n","Usage":"Ignore all per-user config defaults for this invocation; use only CLI flags and hardcoded fallbacks. Useful for overriding a default such as 'pg-pass: true' for a single run. Run 'ddev datagrip config' to manage defaults."}]
 ## DBTypes: mariadb,mysql,postgres
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  Configuration
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Minimum DataGrip version this add-on has been tested with. Bump as needed.
-MIN_DATAGRIP_VERSION="2025.2.5"
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Setup — defaults, helpers, helper-library load
@@ -23,7 +16,6 @@ RESET=false
 DATABASE="db"
 AUTOREFRESH=1
 PGPASS=false
-IGNORE_UNSUPPORTED=false
 
 PGPASS_FILE="$HOME/.pgpass"
 
@@ -97,12 +89,10 @@ if [[ "$NO_DEFAULTS" == false ]]; then
   DEFAULT_PG_PASS="$PGPASS"
   DEFAULT_DEFAULT_DATABASE="$DATABASE"
   DEFAULT_AUTO_REFRESH="$AUTOREFRESH"
-  DEFAULT_IGNORE_UNSUPPORTED_VERSIONS="$IGNORE_UNSUPPORTED"
-  datagrip_config_load_user_defaults pg-pass default-database auto-refresh ignore-unsupported-versions
+  datagrip_config_load_user_defaults pg-pass default-database auto-refresh
   PGPASS="$DEFAULT_PG_PASS"
   DATABASE="$DEFAULT_DEFAULT_DATABASE"
   AUTOREFRESH="$DEFAULT_AUTO_REFRESH"
-  IGNORE_UNSUPPORTED="$DEFAULT_IGNORE_UNSUPPORTED_VERSIONS"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,10 +140,6 @@ while :; do
       PGPASS=true
     fi
     ;;
-  -i|--ignore-unsupported-versions)
-    echo "⏭️  --ignore-unsupported-versions flag provided, version check will not block execution"
-    IGNORE_UNSUPPORTED=true
-    ;;
   -n|--no-defaults)
     # Already handled in the pre-scan above; consume here so it doesn't fall
     # through to the "Unknown option" branch.
@@ -173,15 +159,46 @@ while :; do
 done
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Version check
+#  Version detection and script selection
 #
-#  Runs before we touch the project so an unsupported version aborts cleanly
-#  before any side effects (file writes, ddev start, etc).
+#  Runs before we touch the project so version problems abort cleanly before
+#  any side effects (file writes, ddev start, etc).
+#
+#  The user-configured version (if set) always takes precedence. If both a
+#  configured and detected version exist and differ, a warning is shown.
 # ═══════════════════════════════════════════════════════════════════════════
 
-if ! datagrip_version_check "$MIN_DATAGRIP_VERSION" "$IGNORE_UNSUPPORTED" "$PLATFORM"; then
+# Read the user-configured version (always respected, even with --no-defaults)
+CONFIGURED_VERSION="$(_dg_yaml_get "$_DG_USER_CONFIG" "datagrip-version")"
+
+# Try to auto-detect the installed version
+datagrip_detect_version "$PLATFORM"
+
+if [[ -n "$_DG_DETECTED_VERSION" && -n "$CONFIGURED_VERSION" ]]; then
+  if [[ "$_DG_DETECTED_VERSION" != "$CONFIGURED_VERSION" ]]; then
+    echo "⚠️  Detected DataGrip ${_DG_DETECTED_VERSION} but datagrip-version is configured as ${CONFIGURED_VERSION}."
+    echo "   Using configured version. To clear this override: ddev datagrip config unset datagrip-version"
+  fi
+  DATAGRIP_VERSION="$CONFIGURED_VERSION"
+elif [[ -n "$_DG_DETECTED_VERSION" ]]; then
+  DATAGRIP_VERSION="$_DG_DETECTED_VERSION"
+elif [[ -n "$CONFIGURED_VERSION" ]]; then
+  echo "ℹ️  DataGrip version could not be auto-detected. Using configured version: ${CONFIGURED_VERSION}"
+  DATAGRIP_VERSION="$CONFIGURED_VERSION"
+else
+  echo "❌ Could not detect the installed DataGrip version."
+  echo "   Please set your version explicitly:"
+  echo "     ddev datagrip config set datagrip-version <version>"
+  echo "   Example: ddev datagrip config set datagrip-version 2025.2.5"
   exit 2
 fi
+
+# Look up the version-specific configuration script from the manifest
+VERSIONS_MANIFEST="${SCRIPT_DIR}/datagrip-lib/versions.json"
+if ! datagrip_find_version_script "$DATAGRIP_VERSION" "$VERSIONS_MANIFEST"; then
+  exit 2
+fi
+VERSION_SCRIPT="${_DG_VERSION_SCRIPT}"
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Project state — start the project if it isn't running
@@ -230,57 +247,12 @@ fi
 mkdir -p "${DDEV_APPROOT}/.ddev/datagrip/.idea"
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  JDBC URL construction — per-database-type config
-# ═══════════════════════════════════════════════════════════════════════════
-
-# Build the JDBC URL based on DDEV env vars
-if [[ "$DB_TYPE" == "mysql" ]]; then
-  echo "🔎 Configuring DataGrip for MySQL"
-  query="jdbc:mysql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=db&amp;password=db"
-  driverRef="mysql.8"
-  jdbcDriver="com.mysql.cj.jdbc.Driver"
-elif [[ "$DB_TYPE" == "mariadb" ]]; then
-  echo "🔎 MariaDB database detected, selecting MariaDB JDBC driver for better compatibility"
-  query="jdbc:mariadb://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=db&amp;password=db"
-  driverRef="mariadb"
-  jdbcDriver="org.mariadb.jdbc.Driver"
-elif [[ "$DB_TYPE" == "postgres" ]]; then
-  echo "🔎 Configuring DataGrip for Postgres"
-  if [[ "$PGPASS" == true ]]; then
-    query="jdbc:postgresql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}"
-
-    CREDS="${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}:${DATABASE}:db:db"
-    PATTERN="^.*:[0-9]+:${DATABASE}:db:.*$"
-
-    tmp="$(mktemp "${PGPASS_FILE}.XXXXXX")"
-
-    # Ensure file exists so awk can read it
-    touch "$PGPASS_FILE"
-
-    awk -v pat="$PATTERN" -v repl="$CREDS" '
-      BEGIN { replaced=0 }
-      $0 ~ pat { print repl; replaced=1; next }
-      { print }
-      END { if (!replaced) print repl }
-    ' "$PGPASS_FILE" > "$tmp" && mv "$tmp" "$PGPASS_FILE"
-
-    chmod 600 "$PGPASS_FILE"
-  else
-    query="jdbc:postgresql://${DDEV_PROJECT}.${DDEV_TLD}:${DDEV_HOST_DB_PORT}/${DATABASE}?user=db&amp;password=db"
-  fi
-
-  driverRef="postgresql"
-  jdbcDriver="org.postgresql.Driver"
-else
-  echo "❌ Unsupported database type: ${DB_TYPE}"
-  exit 1
-fi
-
-# ═══════════════════════════════════════════════════════════════════════════
 #  XML output — dataSources.xml and dataSources.local.xml
+#
+#  Delegated to the version-specific script selected above. That script is
+#  responsible for building the JDBC URL and writing both XML files.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Where to put the DataGrip config
 IDEA_DIR="${DDEV_APPROOT}/.ddev/datagrip/.idea"
 DATASOURCES_FILE="${IDEA_DIR}/dataSources.xml"
 DATASOURCES_LOCAL_FILE="${IDEA_DIR}/dataSources.local.xml"
@@ -295,69 +267,8 @@ if [[ -z "$uuid_value" ]]; then
   exit 1
 fi
 
-# Write the XML file, interpolating Bash variables like $query
-cat > "$DATASOURCES_FILE" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-  <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
-    <data-source source="LOCAL" name="ddev" uuid="${uuid_value}">
-      <driver-ref>${driverRef}</driver-ref>
-      <synchronize>true</synchronize>
-      <configured-by-url>true</configured-by-url>
-      <jdbc-driver>${jdbcDriver}</jdbc-driver>
-      <jdbc-url>${query}</jdbc-url>
-      <jdbc-additional-properties>
-        $(if [[ "${AUTOREFRESH}" != "0" ]]; then echo "<property name=\"auto-refresh-interval\" value=\"${AUTOREFRESH}\" />"; fi)
-      </jdbc-additional-properties>
-      <driver-properties>
-        <property name="autoReconnect" value="true" />
-      </driver-properties>
-      <working-dir>\$ProjectFileDir\$</working-dir>
-    </data-source>
-  </component>
-</project>
-EOF
-
-# Build node block
-if [[ "$DB_TYPE" == "postgres" ]]; then
-  NODE_BLOCK="<node kind=\"database\" qname=\"@\">
-    <node kind=\"schema\" qname=\"@\" />
-  </node>
-  <node kind=\"database\" qname=\"${DATABASE}\">
-    <node kind=\"schema\" qname=\"public\" />
-  </node>"
-else
-  NODE_BLOCK="<node kind=\"schema\">
-    <name qname=\"@\" />
-    <name qname=\"${DATABASE}\" />
-  </node>"
-fi
-
-# Build auth block (only when using pgpass)
-if [[ "$PGPASS" == true ]]; then
-  AUTH_BLOCK="<auth-provider>pgpass</auth-provider>
-  <user-name>db</user-name>"
-else
-  AUTH_BLOCK=""
-fi
-
-# Write the XML for the dataSources.local.xml file. This may change depending on PGPASS, so we rewrite it each time now.
-cat > "$DATASOURCES_LOCAL_FILE" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-<component name="dataSourceStorageLocal">
-  <data-source name="ddev" uuid="${uuid_value}">
-    ${AUTH_BLOCK}
-    <schema-mapping>
-      <introspection-scope>
-        ${NODE_BLOCK}
-      </introspection-scope>
-    </schema-mapping>
-    <introspection-level>3</introspection-level>
-  </data-source>
-</component>
-</project>
-EOF
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/datagrip-lib/versions/${VERSION_SCRIPT}" || exit $?
 
 echo "✏️ Wrote DataGrip datasource, starting datagrip..."
 
