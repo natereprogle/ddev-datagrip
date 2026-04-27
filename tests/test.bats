@@ -42,12 +42,20 @@ setup_file() {
   # The path to the add-on repo root (where install.yaml lives).
   export DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." >/dev/null 2>&1 && pwd)"
   export PROJNAME="test-$(basename "${GITHUB_REPO}")"
+  export PG_PROJNAME="${PROJNAME}-pg"
   mkdir -p ~/tmp
 
-  # Allocate two SIBLING tempdirs (not parent/child — ddev rejects that):
-  #   TESTDIR — the ddev project root
-  #   FAKEHOME — overridden $HOME for the test
+  # Allocate sibling tempdirs (not parent/child — ddev rejects that):
+  #   TESTDIR    — the mysql project root (used by most tests)
+  #   PG_TESTDIR — the postgres project root (used by the pg-pass test)
+  #   FAKEHOME   — overridden $HOME for the test
+  #
+  # Why two projects? DDEV refuses to switch a project's database type once
+  # data exists in the volume. So we can't use `ddev config --database=...`
+  # mid-run. Spinning up a dedicated postgres project at setup time and
+  # `cd`ing into it for the postgres test avoids the runtime reconfigure.
   export TESTDIR=$(mktemp -d ~/tmp/${PROJNAME}.XXXXXX)
+  export PG_TESTDIR=$(mktemp -d ~/tmp/${PG_PROJNAME}.XXXXXX)
   export FAKEHOME=$(mktemp -d ~/tmp/${PROJNAME}-home.XXXXXX)
   export DDEV_NONINTERACTIVE=true
   export DDEV_NO_INSTRUMENTATION=true
@@ -56,14 +64,26 @@ setup_file() {
   export REAL_HOME="$HOME"
   export HOME="$FAKEHOME"
 
-  # Clean up any leftover project from a prior run, then create + start ours.
+  # Clean up any leftover projects from prior runs, then create + start both.
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
+  ddev delete -Oy "${PG_PROJNAME}" >/dev/null 2>&1 || true
+
+  # ─── Main project (mysql, default) ───
   cd "${TESTDIR}"
   ddev config --project-name="${PROJNAME}" --project-tld=ddev.site >/dev/null
   ddev start -y >/dev/null
 
+  # ─── Postgres project ───
+  cd "${PG_TESTDIR}"
+  ddev config --project-name="${PG_PROJNAME}" --project-tld=ddev.site --database=postgres:16 >/dev/null
+  ddev start -y >/dev/null
+
+  # Back to main project for the rest of setup_file.
+  cd "${TESTDIR}"
+
   # Fake `datagrip` binary on PATH. Tab-stripping heredoc keeps shebang on
   # column 1. The stub captures invocation args to TESTDIR/datagrip-launch.log.
+  # We put it in TESTDIR; the postgres project will use the same PATH override.
   cat > "${TESTDIR}/datagrip" <<-'EOF'
 	#!/bin/bash
 	echo "datagrip stub called with: $*" > "${TESTDIR}/datagrip-launch.log"
@@ -72,21 +92,28 @@ EOF
   chmod +x "${TESTDIR}/datagrip"
   export PATH="${TESTDIR}:${PATH}"
 
-  # Install the add-on once. This writes commands/host/datagrip and
-  # commands/host/datagrip-lib/* into the project's .ddev/ directory.
-  # We use `ddev utility refresh-custom-commands` instead of `ddev restart`
-  # to register the new commands without paying the ~30s restart cost.
+  # Install the add-on into BOTH projects. `ddev utility refresh-custom-commands`
+  # registers the new commands without paying the ~30s restart cost.
   ddev add-on get "${DIR}" >/dev/null
   ddev utility refresh-custom-commands >/dev/null
+
+  cd "${PG_TESTDIR}"
+  ddev add-on get "${DIR}" >/dev/null
+  ddev utility refresh-custom-commands >/dev/null
+
+  # Final cwd: main project. Tests that need postgres `cd` into PG_TESTDIR.
+  cd "${TESTDIR}"
 }
 
 teardown_file() {
   set -eu -o pipefail
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
+  ddev delete -Oy "${PG_PROJNAME}" >/dev/null 2>&1 || true
   if [[ -n "${REAL_HOME:-}" ]]; then
     export HOME="$REAL_HOME"
   fi
   [ "${TESTDIR:-}" != "" ] && rm -rf "${TESTDIR}"
+  [ "${PG_TESTDIR:-}" != "" ] && rm -rf "${PG_TESTDIR}"
   [ "${FAKEHOME:-}" != "" ] && rm -rf "${FAKEHOME}"
 }
 
@@ -100,43 +127,34 @@ setup() {
   bats_load_library bats-file
   bats_load_library bats-support
 
-  # Reset all per-test mutable state so each test starts clean. Tests have
-  # a small, well-defined set of side effects:
+  # Reset all per-test mutable state so each test starts clean. We clean BOTH
+  # projects (mysql and postgres) because either could have been left in a
+  # mutated state by a previous test. The mutations are small and well-known:
   #   - $HOME/.pgpass and $HOME/.pgpass.bak (pgpass tests)
   #   - $HOME/.local/share/JetBrains/Toolbox/state.json (version-check tests)
-  #   - .ddev/datagrip/.user-config.yaml (config tests)
-  #   - .ddev/datagrip/.gitignore (config tests)
-  #   - .ddev/datagrip/config.yaml — DELIBERATELY preserved across tests so
-  #     the project UUID stays stable; tests that need a fresh UUID call
-  #     `ddev datagrip --reset` explicitly.
-  #   - .ddev/datagrip/.idea/ — preserved unless --reset is invoked.
-  #
-  # The user-config wipe is critical: tests that rely on default behavior
-  # would otherwise see leftover settings from a previous test.
+  #   - <project>/.ddev/datagrip/.user-config.yaml (config tests)
+  #   - <project>/.ddev/datagrip/.gitignore (config tests)
+  #   - <project>/.ddev/datagrip/config.yaml — DELIBERATELY preserved across
+  #     tests so the project UUID stays stable; tests that need a fresh UUID
+  #     call `ddev datagrip --reset` explicitly.
+  #   - <project>/.ddev/datagrip/.idea/ — preserved unless --reset is invoked.
   rm -f "${HOME}/.pgpass" "${HOME}/.pgpass.bak"
   rm -rf "${HOME}/.local/share/JetBrains"
-  rm -f "${TESTDIR}/.ddev/datagrip/.user-config.yaml"
-  rm -f "${TESTDIR}/.ddev/datagrip/.gitignore"
+  for project_dir in "${TESTDIR}" "${PG_TESTDIR}"; do
+    rm -f "${project_dir}/.ddev/datagrip/.user-config.yaml"
+    rm -f "${project_dir}/.ddev/datagrip/.gitignore"
+  done
+
+  # Most tests run against the mysql project. The postgres test cd's to
+  # PG_TESTDIR explicitly. We always start each test in TESTDIR so the
+  # default working dir is predictable.
+  cd "${TESTDIR}"
 }
 
 # No teardown() needed — setup() of the next test handles cleanup, and
 # teardown_file() handles final cleanup.
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
-
-# Reconfigure the project to use Postgres and restart. This is expensive
-# (~30-60s) so it's used by exactly one test that needs the postgres path.
-# After the test, it switches the project back to mysql so subsequent tests
-# (and teardown_file) operate on the original config.
-switch_to_postgres() {
-  ddev config --database=postgres:16 >/dev/null
-  ddev restart -y >/dev/null
-}
-
-switch_to_mysql() {
-  ddev config --database=mysql:8.0 >/dev/null
-  ddev restart -y >/dev/null
-}
 
 # The original health check — runs the command and asserts it exits cleanly.
 health_checks() {
@@ -149,6 +167,8 @@ datasources_xml_path() { echo "${TESTDIR}/.ddev/datagrip/.idea/dataSources.xml";
 datasources_local_xml_path() { echo "${TESTDIR}/.ddev/datagrip/.idea/dataSources.local.xml"; }
 project_config_path() { echo "${TESTDIR}/.ddev/datagrip/config.yaml"; }
 user_config_path() { echo "${TESTDIR}/.ddev/datagrip/.user-config.yaml"; }
+# Postgres-project equivalent (used only by the pg-pass test)
+pg_user_config_path() { echo "${PG_TESTDIR}/.ddev/datagrip/.user-config.yaml"; }
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Smoke test — verifies setup_file did its job
@@ -369,26 +389,28 @@ user_config_path() { echo "${TESTDIR}/.ddev/datagrip/.user-config.yaml"; }
 # ═══════════════════════════════════════════════════════════════════════════
 #  Postgres + pg-pass
 #
-#  Switching to postgres requires a real ddev restart (~30-60s). To minimize
-#  that cost we have ONE postgres test that exercises three assertion groups
-#  with explicit cleanup between them.
+#  setup_file creates a dedicated postgres project (PG_TESTDIR / PG_PROJNAME)
+#  alongside the main mysql one. The postgres test cd's into that project
+#  and runs three assertion groups against it, with explicit cleanup of
+#  $HOME/.pgpass between groups so each group's assertion is meaningful.
 #
-#  The test switches back to mysql at the end so subsequent tests (and
-#  teardown_file) operate on the standard mysql config.
+#  After the test, we cd back to TESTDIR so the next test (and any test
+#  helper that assumes the mysql project's working dir) behaves correctly.
 # ═══════════════════════════════════════════════════════════════════════════
 
 @test "pg-pass: postgres project — flag, config-driven, and --no-defaults bypass" {
-  switch_to_postgres
+  # Use the dedicated postgres project that setup_file created.
+  cd "${PG_TESTDIR}"
 
   # Group 1: --pg-pass flag writes to $HOME/.pgpass
   run ddev datagrip --pg-pass
   assert_success
   assert_file_exists "$HOME/.pgpass"
-  run grep -F "${PROJNAME}.ddev.site" "$HOME/.pgpass"
+  run grep -F "${PG_PROJNAME}.ddev.site" "$HOME/.pgpass"
   assert_success
 
   rm -f "$HOME/.pgpass" "$HOME/.pgpass.bak"
-  rm -f "$(user_config_path)"
+  rm -f "$(pg_user_config_path)"
 
   # Group 2: config-set pg-pass=true triggers pgpass without flag
   run ddev datagrip config set pg-pass true
@@ -396,7 +418,7 @@ user_config_path() { echo "${TESTDIR}/.ddev/datagrip/.user-config.yaml"; }
   run ddev datagrip
   assert_success
   assert_file_exists "$HOME/.pgpass"
-  run grep -F "${PROJNAME}.ddev.site" "$HOME/.pgpass"
+  run grep -F "${PG_PROJNAME}.ddev.site" "$HOME/.pgpass"
   assert_success
 
   rm -f "$HOME/.pgpass" "$HOME/.pgpass.bak"
@@ -405,12 +427,12 @@ user_config_path() { echo "${TESTDIR}/.ddev/datagrip/.user-config.yaml"; }
   run ddev datagrip --no-defaults
   assert_success
   if [[ -f "$HOME/.pgpass" ]]; then
-    run grep -F "${PROJNAME}.ddev.site" "$HOME/.pgpass"
+    run grep -F "${PG_PROJNAME}.ddev.site" "$HOME/.pgpass"
     assert_failure
   fi
 
-  # Switch back to mysql for subsequent tests + teardown_file.
-  switch_to_mysql
+  # cd back to the main project. Subsequent tests assume TESTDIR cwd.
+  cd "${TESTDIR}"
 }
 
 @test "pg-pass on non-postgres project warns and is a no-op" {
