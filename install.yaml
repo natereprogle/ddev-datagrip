@@ -40,7 +40,7 @@ post_install_actions:
     chmod +x "${DDEV_APPROOT}/.ddev/commands/host/datagrip-lib/versions/2025.2.5.sh"
     chmod +x "${DDEV_APPROOT}/.ddev/commands/host/datagrip-lib/versions/unsupported.sh"
 
-    if [ "$GITHUB_ACTIONS" = "true" ]; then
+    if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
       echo "Running in GitHub Actions, skipping LivePlugin installation prompt."
       exit 0
     fi
