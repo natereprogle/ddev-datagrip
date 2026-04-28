@@ -136,8 +136,7 @@ This Add-On provides a workaround to this limitation which utilizes the [LivePlu
 
 **You are not required to utilize the LivePlugin plugin!** The Add-On will operate 100% fine without it. However, doing so will improve your experience with this Add-On greatly. To use this, run `ddev datagrip autorefresh`. The `autorefresh` subcommand will install the plugin via the native `installPlugins` argument in the datagrip CLI launcher, but you can always manually refresh whenever needed or install the plugin manually at a later time.
 
-> [!NOTE]
-> Please keep in mind this *is* a workaround and **not an official solution** to the problem. The reliance on a 3rd party plugin means it is not guaranteed to work forever. Please report any issues with LivePlugin itself to the developer.
+Please keep in mind this *is* a workaround and **not an official solution** to the problem. The reliance on a 3rd party plugin means it is not guaranteed to work forever. Please report any issues with LivePlugin itself to the developer.
  
 </details>
 
