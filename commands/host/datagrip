@@ -4,7 +4,7 @@
 ## Description: Support for opening databases in DataGrip
 ## Usage: datagrip
 ## Example: "ddev datagrip" or "ddev datagrip --database database2" to open a database named "database2"
-## Flags: [{"Name":"database","Shorthand":"d","Usage":"Database name"},{"Name":"reset","Shorthand":"r","Usage":"Reset DataGrip datasource. Manual refresh in DataGrip is required after launch"},{"Name":"auto-refresh","Shorthand":"a","Usage":"Sets the interval, in minutes, that DataGrip will refresh the datasource. Minimum 0.1 minute (6 seconds). Set to 0 to disable"},{"Name":"pg-pass","Shorthand":"p","Usage":"Allows projects using Postgres to utilize the .pgpass file instead of storing credentials in the project directory. Passing this argument is required EACH TIME the command is run. While these credentials are still well known and inherently safe to store, using .pgpass may be beneficial, such as organizations that perform scans on commits for credentials."},{"Name":"no-defaults","Shorthand":"n","Usage":"Ignore all per-user config defaults for this invocation; use only CLI flags and hardcoded fallbacks. Useful for overriding a default such as 'pg-pass: true' for a single run. Run 'ddev datagrip config' to manage defaults."}]
+## Flags: [{"Name":"database","Shorthand":"d","Usage":"Database name"},{"Name":"reset","Shorthand":"r","Usage":"Reset DataGrip datasource. Manual refresh in DataGrip is required after launch if the LivePlugin plugin is not installed"},{"Name":"auto-refresh","Shorthand":"a","Usage":"Sets the interval, in minutes, that DataGrip will refresh the datasource. Minimum 0.1 minute (6 seconds). Set to 0 to disable"},{"Name":"pg-pass","Shorthand":"p","Usage":"Allows projects using Postgres to utilize the .pgpass file instead of storing credentials in the project directory. Passing this argument is required EACH TIME the command is run. While these credentials are still well known and inherently safe to store, using .pgpass may be beneficial, such as organizations that perform scans on commits for credentials."},{"Name":"no-defaults","Shorthand":"n","Usage":"Ignore all per-user config defaults for this invocation; use only CLI flags and hardcoded fallbacks. Useful for overriding a default such as 'pg-pass: true' for a single run. Run 'ddev datagrip config' to manage defaults."}]
 ## DBTypes: mariadb,mysql,postgres
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -283,7 +283,7 @@ if [[ "$FIRST_RUN" == true ]]; then
   printf "%*s\n" $(((${#title}+$COLUMNS)/2)) "$title"
   printf "%*s" "$COLUMNS" | tr ' ' '-'
   echo "If this is your first time connecting to the DB, no schema has been generated."
-  echo "Due to DataGrip limitations, you must manually refresh the datasource in DataGrip to generate the schema"
+  echo "Due to DataGrip limitations, if the LivePlugin plugin is not installed, you must manually refresh the datasource in DataGrip to generate the schema"
   echo "You should not need to manually refresh again unless you manually delete the project or datasource, or run 'ddev datagrip --reset'"
   printf "%*s" "$COLUMNS" | tr ' ' '-'
   echo ""
@@ -294,7 +294,7 @@ elif [[ "$RESET" == true ]]; then
   title="⚠️ DataGrip datasource has been reset ⚠️"
   printf "%*s\n" $(((${#title}+$COLUMNS)/2)) "$title"
   printf "%*s" "$COLUMNS" | tr ' ' '-'
-  echo "DataGrip datasource has been reset. You must manually refresh the datasource in DataGrip."
+  echo "DataGrip datasource has been reset. You may need to manually refresh the datasource in DataGrip if the LivePlugin plugin is not installed."
   echo "You should not need to manually refresh again unless you manually delete the project or datasource, or run 'ddev datagrip --reset'"
   printf "%*s" "$COLUMNS" | tr ' ' '-'
   echo ""
