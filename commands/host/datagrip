@@ -48,18 +48,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/datagrip-lib/version-check.sh"
 # shellcheck source=datagrip-lib/config.sh
 source "${SCRIPT_DIR}/datagrip-lib/config.sh"
+# shellcheck source=datagrip-lib/autorefresh.sh
+source "${SCRIPT_DIR}/datagrip-lib/autorefresh.sh"
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Config subcommand
+# ═════════════════════════════════════════════════════════════════════════════════════════
+#  Config & Autorefresh subcommand
 #
-#  If the first argument is "config", route to the config helper and exit.
-#  This must run before normal flag parsing so 'ddev datagrip config set ...'
-#  doesn't get interpreted as launch-mode flags.
-# ═══════════════════════════════════════════════════════════════════════════
+#  If the first argument is "config" or "autorefresh", route to the correct helper and exit.
+#  This must run before normal flag parsing so 'ddev datagrip config set ...' 
+#  or 'ddev datagrip autorefresh' don't get interpreted as launch-mode flags.
+# ═════════════════════════════════════════════════════════════════════════════════════════
 
 if [[ "${1:-}" == "config" ]]; then
   shift
   datagrip_config_subcommand "$@"
+  exit $?
+fi
+
+if [[ "${1:-}" == "autorefresh" ]]; then
+  shift
+  datagrip_autorefresh
   exit $?
 fi
 
