@@ -90,8 +90,9 @@ This Add-On will create between 1 and 2 configuration files, depending on if any
 
 Configuration can be modified by the user by using the `ddev datagrip config <subcommand> [args]` command. Use `ddev datagrip config` to learn what configuration options are available and how to view and/or modify them.
 
-## Additional Features
-A known limitation of DataGrip is that it cannot automatically connect to a database on launch. The only way around this is either via the IDE Scripting Engine, writing your own plugin, or using an already-existing 3rd Party Plugin.
+## Auto Refresh
+
+If you want to install the LivePlugin plugin, you can do so in DataGrip or by running `ddev datagrip autorefresh`. The `autorefresh` command simply runs `datagrip installPlugins LivePlugin` for you, and tells you a little bit about what it does. A more detailed explanation of why this exists [can be found below](#initial-data-refresh).
 
 # Update Philosophy
 JetBrains reserves the right to change how DataGrip is configured at any time. To support both old and new DataGrip versions simultaneously, this Add-On uses a version manifest (`commands/host/datagrip-lib/versions.json`) that maps DataGrip version ranges to version-specific configuration scripts in `commands/host/datagrip-lib/versions/`.
